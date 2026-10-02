@@ -1,4 +1,11 @@
-# 5.9.0-beta.2 opening/sync performance constraints
+# 5.9.0-beta.4 performance constraints
+
+## beta.3 translation / extension constraints
+
+- 普通整本下载继续复用 240 秒 book-scoped reader context；只有翻译生成请求使用 fresh/no-cache reader page。
+- 扩展自动更新检查只在启动空闲、扩展中心打开或主页网络恢复时触发，并使用独立后台 subprocess；活动 Reader 不启动这项检查。
+- 推荐列表不做逐项 GitHub 请求；只有详情页实时解析远端版本。
+
 
 - ReaderReady immediately starts a lightweight opening synchronization surface; it does not wait for shelf, comments, covers or other nonessential network work.
 - Cloud progress and local layout preparation may proceed in parallel. The default soft wait is 2.5 seconds; slow cloud access releases the user to the local position instead of blocking opening indefinitely.

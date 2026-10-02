@@ -1085,6 +1085,13 @@ function Plugin:init()
             local cleaned_ok,cleaned=pcall(center.cleanup_stale,self,false)
             if not cleaned_ok then logger.warn("[MiuRead][Extensions] startup temp cleanup failed",tostring(cleaned)) end
         end
+        if ok and center and type(center.maybe_auto_check)=="function" then
+            UIManager:scheduleIn(2.5,function()
+                if self:_active_reader_ui() then return end
+                local check_ok,check_err=pcall(center.maybe_auto_check,self,"startup_idle")
+                if not check_ok then logger.warn("[MiuRead][Extensions] startup update discovery failed",tostring(check_err)) end
+            end)
+        end
     end)
     Actions.register()
     if self:_home_enabled() then install_home_screensaver_patch() end
@@ -1908,7 +1915,7 @@ function Plugin:home_menu()
         account,
     }
     if not self:_home_enabled() then
-        trailing[#trailing+1]={text="插件与扩展",post_text="安装 更新与插件管理",sub_item_table_func=function() return PluginSettings.plugins_extensions(self) end}
+        trailing[#trailing+1]={text="插件与扩展",post_text=(function() local c=require("miuread.extension_center"); local u=c.update_count(self); return u>0 and (tostring(u).." 个可更新") or "安装 更新与插件管理" end)(),sub_item_table_func=function() return PluginSettings.plugins_extensions(self) end}
         trailing[#trailing+1]={text="系统维护",post_text="诊断 修复与清理",sub_item_table_func=function() return PluginSettings.system_maintenance(self) end}
     end
     trailing[#trailing+1]={text="觅阅设置",sub_item_table_func=function() return self:settings_menu() end}
@@ -2317,7 +2324,7 @@ function Plugin:_prepare_shelf_rows(rows)
                 or tonumber(local_pos and local_pos.progress) or tonumber(session.verified_local_percent)
             local remote_progress=tonumber(b.remote_progress) or tonumber(remote_pos and remote_pos.progress) or tonumber(b.progress)
             local resolved=_G.__MIUREAD_POSITION_RESOLUTION.decide{
-                local_position=local_pos,remote_position=remote_pos,verified_anchor=state.verified_anchor or session.cloud_anchor,
+                local_position=local_pos,remote_position=remote_pos,verified_anchor=_G.__MIUREAD_POSITION_RESOLUTION.trusted_verified_anchor(session,state),
                 local_seq=tonumber(session.progress_latest_sequence or 0) or 0,
                 verified_seq=tonumber(session.progress_verified_sequence or 0) or 0,
                 local_updated_at=tonumber(local_pos and local_pos.updated_at or 0) or 0,
@@ -12548,11 +12555,15 @@ function Plugin:home_file_manager_menu()
 end
 
 function Plugin:tools_menu()
+    local ExtensionCenter=require("miuread.extension_center")
+    local extension_summary=ExtensionCenter.update_summary(self)
+    local extension_post=extension_summary.updates>0 and (tostring(extension_summary.updates).." 个可更新")
+        or (tostring(ExtensionCenter.installed_count(self)).." 个已安装")
     return {
         {text="全部书籍",callback=function() self:show_home_all_books() end},
         {text="阅读历史",callback=function() self:show_home_reading_history() end},
         {text="文件管理",sub_item_table_func=function() return self:home_file_manager_menu() end},
-        {text="插件与扩展",post_text=tostring(require("miuread.extension_center").installed_count(self)).." 个已安装",sub_item_table_func=function() return PluginSettings.plugins_extensions(self) end},
+        {text="插件与扩展",post_text=extension_post,sub_item_table_func=function() return PluginSettings.plugins_extensions(self) end},
         {text="系统维护",post_text="诊断 修复与清理",sub_item_table_func=function() return PluginSettings.system_maintenance(self) end},
         {text="KOReader",post_text="设置 文件管理与返回",sub_item_table_func=function() return PluginSettings.koreader_tools(self) end},
     }
@@ -12940,6 +12951,10 @@ function Plugin:_reader_typography_apply_now(generation,guard_mode)
         if type(font.onSetLineSpace)=="function" then ok,err=pcall(font.onSetLineSpace,font,target) end
         if ok then applied=applied+1 else errors[#errors+1]="line_spacing:"..tostring(err or "unsupported") end
     end
+    if pending.translation_mode~=nil or pending.translation_font_scale~=nil then
+        local ok=self:_apply_reader_translation_mode(pending.translation_mode or self:_reader_translation_mode(),pending.translation_font_scale)
+        if ok then applied=applied+1 else errors[#errors+1]="translation:unsupported" end
+    end
 
     logger.info("[MiuRead][Typography] batch applied",
         "changes=",tostring(applied),"guard=",tostring(guard_mode or "none"),
@@ -13050,7 +13065,11 @@ function Plugin:_reader_queue_typography(key,value)
         pending={file=path,generation=0}
         self._reader_typography_pending=pending
     end
-    pending[key]=tonumber(value)
+    if key=="translation_mode" then
+        pending[key]=require("miuread.translation").normalize_mode(value)
+    else
+        pending[key]=tonumber(value)
+    end
     pending.generation=(tonumber(pending.generation) or 0)+1
     local generation=pending.generation
     if self._reader_typography_apply_task then UIManager:unschedule(self._reader_typography_apply_task) end
@@ -13407,6 +13426,233 @@ function Plugin:_current_book_supports_miuread_marks()
     return record and (record.annotation_requested==true or variant:find("notes",1,true)~=nil) or false
 end
 
+function Plugin:_reader_translation_mode()
+    local settings=self.ui and self.ui.doc_settings
+    local mode=settings and settings:readSetting("miuread_translation_mode") or nil
+    return require("miuread.translation").normalize_mode(mode)
+end
+
+function Plugin:_reader_translation_label()
+    local mode=self:_reader_typography_pending_value("translation_mode") or self:_reader_translation_mode()
+    return require("miuread.translation").label(mode)
+end
+
+function Plugin:_reader_translation_font_scale_value()
+    local pending=self:_reader_typography_pending_value("translation_font_scale")
+    local settings=self.ui and self.ui.doc_settings
+    return require("miuread.translation").normalize_font_scale(pending
+        or (settings and settings:readSetting("miuread_translation_font_scale")))
+end
+
+function Plugin:_reader_adjust_translation_font_scale(delta)
+    local scale=require("miuread.translation").normalize_font_scale(self:_reader_translation_font_scale_value()+(tonumber(delta) or 0))
+    return self:_reader_queue_typography("translation_font_scale",scale)
+end
+
+function Plugin:_reader_translation_candidate()
+    local current=self.sync and self.sync.current
+    local book_id=tostring(current and current.book and (current.book.book_id or current.book.bookId) or "")
+    return self:_reader_session_is_weread() and self:_reader_is_reflowable() and book_id:match("^CB_")~=nil
+end
+
+function Plugin:_reader_translation_profile()
+    local path=tostring(self:_current_document_path() or "")
+    if not path:lower():match("%.epub$") then return nil,"not_epub" end
+    local attr=lfs.attributes(path) or {}
+    local cached=self._reader_translation_cache
+    if cached and cached.path==path and cached.document==self.ui.document
+        and cached.size==attr.size and cached.mtime==attr.modification then
+        return cached.profile,cached.error
+    end
+    local ok,profile,err=pcall(require("miuread.translation").inspect,path)
+    if not ok then err=profile; profile=nil end
+    self._reader_translation_cache={path=path,document=self.ui.document,size=attr.size,mtime=attr.modification,profile=profile,error=err}
+    return profile,err
+end
+
+function Plugin:_reader_translation_css()
+    local mode=self:_reader_translation_mode()
+    -- Ordinary opening retains the server's default original-only stylesheet.
+    -- Inspect text only after the user opens the translation panel, or when
+    -- restoring a non-default mode for a previously verified document.
+    local cached=self._reader_translation_cache
+    if mode=="original" and not (cached and cached.path==self:_current_document_path()) then return nil end
+    local profile=self:_reader_translation_profile()
+    local scale=self:_reader_translation_font_scale_value()
+    cached=self._reader_translation_cache
+    -- The parsed profile is tied to the document and file fingerprint. Reuse
+    -- its CSS until mode/scale changes, rather than rebuilding every paragraph
+    -- selector whenever KOReader asks for the combined stylesheet.
+    if cached and cached.css_mode==mode and cached.css_scale==scale then return cached.css end
+    local css=require("miuread.translation").css(profile,mode,scale)
+    if cached then cached.css_mode=mode; cached.css_scale=scale; cached.css=css end
+    return css
+end
+
+function Plugin:_apply_reader_translation_mode(mode,font_scale)
+    local ui=self.ui
+    local settings=ui and ui.doc_settings
+    local st=ui and ui.styletweak
+    if not (settings and st and type(ui.handleEvent)=="function") then return false end
+    local profile=self:_reader_translation_profile()
+    if not profile or profile.blocks==0 or (mode=="translation" and not profile.separable) then return false end
+    if not self:_install_marks_getCssText_wrapper(st) then return false end
+    mode=require("miuread.translation").normalize_mode(mode)
+    local previous=settings:readSetting("miuread_translation_mode")
+    local previous_scale=settings:readSetting("miuread_translation_font_scale")
+    local xp=ui.rolling and ui.rolling.xpointer
+    local target=require("miuread.translation").remap_xpointer(profile,xp,mode)
+    settings:saveSetting("miuread_translation_mode",mode)
+    settings:saveSetting("miuread_translation_font_scale",require("miuread.translation").normalize_font_scale(font_scale or previous_scale))
+    local ok,err=pcall(ui.handleEvent,ui,Event:new("ApplyStyleSheet"))
+    if not ok then
+        settings:saveSetting("miuread_translation_mode",previous)
+        settings:saveSetting("miuread_translation_font_scale",previous_scale)
+        pcall(ui.handleEvent,ui,Event:new("ApplyStyleSheet"))
+        logger.warn("[MiuRead][Translation] display change failed",tostring(err))
+        return false
+    end
+    if target and self.ui==ui and ui.document and type(ui.document.isXPointerInDocument)=="function" then
+        local valid,in_document=pcall(ui.document.isXPointerInDocument,ui.document,target)
+        if valid and in_document then pcall(ui.handleEvent,ui,Event:new("GotoXPointer",target)) end
+    end
+    self:toast("外文翻译 · "..require("miuread.translation").label(mode),1.5)
+    return true
+end
+
+function Plugin:_show_reader_translation_font_scale_panel(back_callback)
+    ReaderSettingsDialog.show{
+        title="译文正文大小",
+        subtitle="100% 跟随正文字号；标题保留书籍样式",
+        on_back=function() self:_show_reader_translation_panel(back_callback) end,
+        on_home=function() return self:_reader_home_action("reader surface") end,
+        hero=function()
+            local scale=self:_reader_translation_font_scale_value()
+            return {value=tostring(scale).."%",
+                on_decrease=scale>80 and function() self:_reader_adjust_translation_font_scale(-10) end or nil,
+                on_increase=scale<180 and function() self:_reader_adjust_translation_font_scale(10) end or nil}
+        end,
+        rows=function()
+            return {{label="跟随正文字号",value="100%",keep_open=true,
+                callback=function() self:_reader_queue_typography("translation_font_scale",100) end}}
+        end,
+    }
+end
+
+function Plugin:_show_reader_translation_panel(back_callback)
+    local profile,err=self:_reader_translation_profile()
+    if not profile then
+        logger.warn("[MiuRead][Translation] inspection unavailable",tostring(err))
+    end
+    ReaderSettingsDialog.show{
+        title="外文翻译",
+        subtitle=profile and profile.blocks>0 and "使用微信读书译文；尚无译文的段落保留原文"
+            or "切换将申请生成当前章译文，需要微信读书付费会员",
+        on_back=back_callback or function() self:show_reader_control_center("reading") end,
+        on_home=function() return self:_reader_home_action("reader surface") end,
+        rows=function()
+            local rows={}
+            local selected=self:_reader_typography_pending_value("translation_mode") or self:_reader_translation_mode()
+            for _,mode in ipairs({"original","bilingual","translation"}) do
+                local target=mode
+                rows[#rows+1]={label=require("miuread.translation").label(target),
+                    value=selected==target and "已选择" or "",value_bold=selected==target,
+                    enabled=target~="translation" or not profile or profile.blocks==0 or profile.separable,keep_open=false,callback=function()
+                        self:_request_reader_translation_mode(target)
+                    end}
+            end
+            if profile and profile.blocks>0 and not profile.separable then
+                rows[#rows+1]={label="部分译文无法单独分离",value="可使用原文或双语",enabled=false}
+            end
+            rows[#rows+1]={label="译文正文大小",value=tostring(self:_reader_translation_font_scale_value()).."%",
+                enabled=profile~=nil and profile.blocks>0,arrow=true,callback=function()
+                    self:_show_reader_translation_font_scale_panel(back_callback)
+                end}
+            return rows
+        end,
+    }
+    return true
+end
+
+function Plugin:_reader_translation_current_uid()
+    local current=self:_current_book_record()
+    local map=current and current.record and current.record.chapter_map or {}
+    local fragment=(self.ui and self.ui.rolling and self.ui.rolling.xpointer or ""):match("/DocFragment%[(%d+)%]")
+    local chapter=fragment and map[tonumber(fragment)]
+    if chapter then return tostring(chapter.uid or chapter.chapterUid or ""),current end
+    local position=self.sync and self.sync:local_position() or nil
+    return tostring(position and position.chapter_uid or map[1] and (map[1].uid or map[1].chapterUid) or ""),current
+end
+
+function Plugin:_request_reader_translation_mode(mode)
+    mode=require("miuread.translation").normalize_mode(mode)
+    local profile=self:_reader_translation_profile()
+    local uid,current=self:_reader_translation_current_uid()
+    if mode=="original" then
+        if profile and profile.blocks>0 then return self:_reader_queue_typography("translation_mode",mode) end
+        if self.ui and self.ui.doc_settings then
+            self.ui.doc_settings:saveSetting("miuread_translation_mode",mode)
+            pcall(self.ui.handleEvent,self.ui,Event:new("ApplyStyleSheet"))
+        end
+        self:toast("外文翻译 · 原文",1.5)
+        return true
+    end
+    for _,chapter in ipairs(profile and profile.chapters or {}) do
+        if chapter.chapter_uid==uid and chapter.blocks>0 then
+            return self:_reader_queue_typography("translation_mode",mode)
+        end
+    end
+    if not current or not current.book or not current.record or uid=="" then
+        self:info("暂时无法确定当前章节，原文可以继续阅读。请重新打开本书后再试。")
+        return false
+    end
+    if self.download_task and self.download_task:busy() then
+        self:info("已有下载任务正在进行，请完成后再生成本章译文。")
+        return false
+    end
+    local book_id=current.book.book_id or current.book.bookId
+    local kind=current.variant or current.record.variant
+    local record=current.record
+    if self.store and kind then
+        local finder=record.chapter_uid and self.store.chapter_variant or self.store.variant
+        if finder then
+            record=(record.chapter_uid and finder(self.store,book_id,record.chapter_uid,kind)
+                or finder(self.store,book_id,kind)) or record
+        end
+    end
+    if record.pending_install and U.file_exists(record.pending_file) then
+        local pending=require("miuread.translation").inspect(record.pending_file)
+        for _,chapter in ipairs(pending and pending.chapters or {}) do
+            if tostring(pending.book_id)==tostring(book_id) and chapter.chapter_uid==uid and chapter.blocks>0 then
+                local updated=U.copy(record)
+                updated.translation_mode=mode
+                if updated.chapter_uid then self.store:save_chapter_variant(book_id,updated.chapter_uid,kind,updated)
+                else self.store:save_variant(book_id,kind,updated) end
+                self:info("当前章译文已生成，正在等待安装。请关闭本书，等待“新版本已安装”提示后重新打开，显示“"
+                    ..require("miuread.translation").label(mode).."”。")
+                return true
+            end
+        end
+        self:info("已有新版本等待安装。请先关闭本书，等待安装完成后再生成其他章节译文。")
+        return false
+    end
+    local options=BookIntegrity.repair_options(record)
+    options.generate_translation_uid=uid
+    options.translation_mode=mode
+    local book={bookId=current.book.book_id or current.book.bookId,title=current.book.title,author=current.book.author,cover=current.book.cover}
+    self:status_toast("外文翻译","正在检查会员状态并申请生成当前章译文",3)
+    return self:download(book,options,false,function(record)
+        if not record then return end
+        self._reader_translation_cache=nil
+        if record.pending_install then
+            self:info("当前章译文已生成。请关闭本书，等待“新版本已安装”提示后重新打开，显示“"
+                ..require("miuread.translation").label(mode).."”。")
+        else
+            self:info("当前章译文已更新，重新打开本书即可显示“"..require("miuread.translation").label(mode).."”。")
+        end
+    end,false)
+end
+
 function Plugin:_install_marks_getCssText_wrapper(st)
     if not (st and type(st.getCssText)=="function") then return false end
     if rawget(st,"_miuread_marks_original_getCssText")~=nil then return true end
@@ -13415,9 +13661,10 @@ function Plugin:_install_marks_getCssText_wrapper(st)
     st.getCssText=function(instance)
         local base=original(instance)
         local extra=self:_annotation_mark_hide_css()
-        if extra==nil then return base end
-        if base==nil or base=="" then return extra end
-        return base.."\n"..extra
+        if extra~=nil then base=(base and base~="" and base.."\n" or "")..extra end
+        local translation=self:_reader_translation_css()
+        if translation~=nil then base=(base and base~="" and base.."\n" or "")..translation end
+        return base
     end
     return true
 end
@@ -15595,6 +15842,10 @@ function Plugin:_reader_control_categories()
             })
         end
         reading_items[#reading_items+1]={icon="comment",label="评论",value=self:_thoughts_enabled_label(),value_bold=true,callback=function() self:_show_reader_comment_center(back_to("reading")) end}
+        if self:_reader_translation_candidate() then
+            reading_items[#reading_items+1]={icon="swap",label="外文翻译",value=self:_reader_translation_label(),
+                callback=function() self:_show_reader_translation_panel(back_to("reading")) end}
+        end
     end
 
     local book_items
@@ -18491,7 +18742,7 @@ function Plugin:_finish_download_runtime(runtime,result)
         elseif validation_failed then
             first="生成的书籍校验未通过，原文件和下载进度已保留。请重试；若仍失败，请反馈日志。"
         else
-            first=U.first_line(err)
+            first=(opt.generate_translation_uid and require("miuread.translation_generation").friendly_error(err)) or U.first_line(err)
         end
         if was_background then
             local toast_title=auth_required and "下载登录验证失败" or (rate_limited and "请求受限"
@@ -18502,6 +18753,8 @@ function Plugin:_finish_download_runtime(runtime,result)
                 or (image_missing and "已完成内容和断点已保留，可用修复书籍继续"
                 or (content_pending and "生成未完成，原文件和进度已保留"
                 or (tostring(b.title or "未命名").."下载未完成，进度已保留")))))
+            local translation_notice=opt.generate_translation_uid and require("miuread.translation_generation").friendly_error(err)
+            if translation_notice then toast_title="外文翻译"; toast_text=translation_notice end
             self:status_toast(toast_title,toast_text,5)
         else self:info(first) end
         -- Any failed book pauses the single waiting task. The user decides whether
@@ -19119,12 +19372,44 @@ function Plugin:_install_pending_record(book_id,kind,chapter_uid,record)
     if pending=="" or target=="" or not U.file_exists(pending) then return false,"等待安装文件不存在" end
     local validation={book_id=book_id,variant=record.variant or kind,chapters=record.chapter_map,
         previous_chapters=record.previous_chapter_map}
+    local translation_settings,previous_settings,remapped_settings
+    if record.translation_mode then
+        local DocSettings=require("docsettings")
+        translation_settings=DocSettings:open(target)
+        previous_settings=U.copy(translation_settings.data)
+        local good,remapped,remap_error=pcall(require("miuread.translation").rebase_settings,
+            target,pending,previous_settings,record.translation_mode)
+        if not good or not remapped then
+            local reason=tostring(remap_error or remapped)
+            logger.warn("[MiuRead][Translation] native positions could not be migrated",reason)
+            return false,"译文已生成，但阅读位置或划线无法安全迁移；原文件已保留。\n"..reason
+        end
+        remapped_settings=remapped
+        -- The reader is closed here, so native SaveSettings has finished.
+        -- Persist the migrated settings first; restore them if EPUB install
+        -- fails. DocSettings keeps its ordinary sidecar backup as well.
+        local flushed,saved=pcall(translation_settings.flush,translation_settings,remapped)
+        if not flushed or not saved then
+            pcall(translation_settings.flush,translation_settings,previous_settings)
+            return false,"无法保存迁移后的阅读位置，原文件已保留。"
+        end
+    end
     local ok,mode_or_error=EpubInstaller.install(pending,target,validation)
-    if not ok then return false,"无法安装新 EPUB："..tostring(mode_or_error) end
+    if not ok then
+        if translation_settings then pcall(translation_settings.flush,translation_settings,previous_settings) end
+        return false,"无法安装新 EPUB："..tostring(mode_or_error)
+    end
+    if translation_settings then
+        remapped_settings.miuread_translation_pending_rebase=nil
+        local cleaned,saved=pcall(translation_settings.flush,translation_settings,remapped_settings)
+        if not cleaned or not saved then logger.warn("[MiuRead][Translation] rebase journal will be cleared on next open") end
+    end
     local updated=U.copy(record)
     updated.pending_file=nil
     updated.pending_install=nil
     updated.previous_chapter_map=nil
+    updated.translation_mode=nil
+    updated.translation_refresh_versions=nil
     updated.installed_at=os.time()
     updated.file_size=U.file_size(target)
     if chapter_uid then self.store:save_chapter_variant(book_id,chapter_uid,kind,updated)
@@ -19178,6 +19463,7 @@ function Plugin:_install_pending_downloads(notify)
                 installed_records[#installed_records+1]=value
             else
                 logger.warn("[MiuRead][Download] pending install failed",tostring(value))
+                if record.translation_mode then self:status_toast("外文翻译",tostring(value),6) end
             end
         end
     end
@@ -21188,6 +21474,27 @@ function Plugin:show_downloads(back_callback)
         end,
     }
 
+    -- Extension discovery/update actions stay on the first download page.
+    -- The actual transfer tasks remain in their own submenu so a long book
+    -- download history can never push these actions to the final page.
+    if filter~="book" then
+        local ok_center,ExtensionCenter=pcall(require,"miuread.extension_center")
+        if ok_center and ExtensionCenter then
+            local summary=type(ExtensionCenter.update_summary)=="function" and ExtensionCenter.update_summary(self) or {updates=0}
+            items[#items+1]={text="下载扩展",post_text="推荐 搜索与社区热门",sub_item_table_func=function() return ExtensionCenter.discovery_menu(self) end}
+            items[#items+1]={text="更新扩展",post_text=(summary.updates or 0)>0 and (tostring(summary.updates).." 个可更新")
+                or (summary.checking and "正在检查…" or (summary.checked_fresh and "全部已是最新" or "检查更新")),
+                sub_item_table_func=function() return ExtensionCenter.update_menu(self) end}
+            local extension_rows=type(ExtensionCenter.download_rows)=="function" and ExtensionCenter.download_rows(self) or {}
+            items[#items+1]={text="插件下载任务",post_text=#extension_rows>0 and (tostring(#extension_rows).." 项") or "暂无任务",
+                sub_item_table_func=function()
+                    local rows=ExtensionCenter.download_rows(self)
+                    if #rows==0 then return {{text="暂无插件下载任务",enabled=false}} end
+                    return rows
+                end}
+        end
+    end
+
     if filter~="extension" then
         items[#items+1]={text="书籍下载",enabled=false}
         if self:_has_download_status() then items[#items+1]={text=self:_download_status_label(),callback=function() self:show_download_status() end} end
@@ -21196,20 +21503,6 @@ function Plugin:show_downloads(back_callback)
         items[#items+1]={text="等待下载",post_text=tostring(#queue).." 项",callback=function() self:show_waiting_downloads() end}
     end
 
-    if filter~="book" then
-        local ok_center,ExtensionCenter=pcall(require,"miuread.extension_center")
-        local extension_rows={}
-        if ok_center and ExtensionCenter and type(ExtensionCenter.download_rows)=="function" then
-            local ok_rows,value=pcall(ExtensionCenter.download_rows,self)
-            if ok_rows and type(value)=="table" then extension_rows=value end
-        end
-        items[#items+1]={text="插件下载",enabled=false}
-        if #extension_rows==0 then
-            items[#items+1]={text="暂无插件下载任务",post_text="从插件市场安装后会显示在这里",enabled=false}
-        else
-            for _,row in ipairs(extension_rows) do items[#items+1]=row end
-        end
-    end
 
     items[#items+1]={text="存储",separator=true,enabled=false}
     items[#items+1]={text="存储占用",callback=function() self:show_storage_usage() end}
@@ -23092,7 +23385,7 @@ function Plugin:_open_sync_close(reason, fallback)
         self._open_sync_fallback_at=monotonic_wall_time()
         self._open_sync_fallback_page=self:_reader_current_page()
         self._open_sync_user_interacted=false
-        self:status_toast("阅读位置同步","未能及时确认云端，已使用本机位置",3)
+        self:status_toast("阅读位置同步","云端响应较慢，已先使用本机位置；后台继续确认",3)
     end
     logger.info("[MiuRead][OpenSync] surface closed","reason=",tostring(reason or "done"),"fallback=",tostring(fallback==true))
     return true
@@ -23147,7 +23440,7 @@ function Plugin:_position_resolution_context(book_id)
         local_seq=tonumber(session.progress_latest_sequence or 0) or 0,
         verified_seq=tonumber(session.progress_verified_sequence or 0) or 0,
         local_updated_at=tonumber(prior.updated_at or session.progress_upload_verified_at or session.progress_decided_at or 0) or 0,
-        verified_anchor=U.copy(type(state.verified_anchor)=="table" and state.verified_anchor or self.sync:cloud_anchor(book_id)),
+        verified_anchor=_G.__MIUREAD_POSITION_RESOLUTION.trusted_verified_anchor(session,state),
         created_at=monotonic_wall_time(),
     }
     self._position_resolution_contexts[book_id]=context
@@ -23158,11 +23451,11 @@ function Plugin:_save_position_resolution(book_id,winner,reason,local_position,r
     book_id=tostring(book_id or "")
     if book_id=="" then return false end
     local session=self.store:session(book_id) or {}
-    local state=type(session.position_state)=="table" and U.copy(session.position_state) or {version=1}
+    local state=_G.__MIUREAD_POSITION_RESOLUTION.state_snapshot(session.position_state)
     state.version=1
     if type(local_position)=="table" then
         local previous=type(state.local_position)=="table" and state.local_position or {}
-        state.local_position=U.copy(local_position)
+        state.local_position=_G.__MIUREAD_POSITION_RESOLUTION.snapshot(local_position) or {}
         -- Capturing/restoring a page is not itself a reading event. Freshness
         -- must come from an explicit event timestamp, an earlier durable state,
         -- or a verified progress event; never synthesize "now" merely because
@@ -23172,7 +23465,7 @@ function Plugin:_save_position_resolution(book_id,winner,reason,local_position,r
         state.local_position.seq=tonumber(session.progress_latest_sequence or local_position.progress_sequence or previous.seq or 0) or 0
     end
     if type(remote)=="table" then
-        state.remote_position=U.copy(remote)
+        state.remote_position=_G.__MIUREAD_POSITION_RESOLUTION.snapshot(remote) or {}
         state.remote_position.updated_at=tonumber(remote.updated_at or remote.updated or 0) or 0
         state.remote_position.fetched_at=os.time()
     end
@@ -23294,6 +23587,9 @@ function Plugin:ensure_read_report_progress(reason,automatic)
 
     self._progress_check_running=true
     self.sync:begin_progress_sync(reason or "读取云端进度")
+    -- Freeze the pre-fetch reconciliation context. A cloud response fetched a
+    -- few seconds later is an observation, never the historical common anchor.
+    self:_position_resolution_context(id)
     local chapter_percent=math.floor((self.sync:local_ratio() or 0)*100+.5)
     local function local_failed(err,meta)
         self._progress_check_running=false
@@ -24269,7 +24565,7 @@ function Plugin:on_remote_progress(id,localp,remote,automatic,local_position)
     end
 
     local result=_G.__MIUREAD_POSITION_RESOLUTION.decide{
-        local_position=local_position,remote_position=remote,verified_anchor=context.verified_anchor or state.verified_anchor or session.cloud_anchor,
+        local_position=local_position,remote_position=remote,verified_anchor=context.verified_anchor,
         local_seq=context.local_seq or session.progress_latest_sequence,verified_seq=context.verified_seq or session.progress_verified_sequence,
         local_updated_at=context.local_updated_at,remote_updated_at=tonumber(remote and (remote.updated_at or remote.updated) or 0) or 0,
         clock_skew_grace=Config.POSITION_CLOCK_SKEW_GRACE_SECONDS,
@@ -27828,6 +28124,14 @@ end
 -- stylesheet.  This avoids reopening a cached book and then forcing a second
 -- full layout pass merely to hide its annotation decoration.
 function Plugin:onDocSettingsLoad()
+    local settings=self.ui and self.ui.doc_settings
+    if settings and settings.data and settings.data.miuread_translation_pending_rebase then
+        local ok,data,err=pcall(require("miuread.translation").recover_settings,self:_current_document_path(),settings.data)
+        if ok and data then
+            settings.data=data
+            pcall(settings.flush,settings)
+        else logger.warn("[MiuRead][Translation] interrupted install recovery unavailable",tostring(err or data)) end
+    end
     local st=self.ui and self.ui.styletweak or nil
     if not (st and type(st.getCssText)=="function") then
         self._annotation_mark_style_hidden=nil
@@ -28231,6 +28535,12 @@ function Plugin:onNetworkConnected()
             local prefs=self.store:preferences().sync or {}
             if prefs.auto_latest_position~=false and not self._progress_check_running then
                 self:ensure_read_report_progress("network_restored",true)
+            end
+        end
+        if HomeView.is_shown() and not self:_active_reader_ui() then
+            local ok_center,center=pcall(require,"miuread.extension_center")
+            if ok_center and center and type(center.maybe_auto_check)=="function" then
+                pcall(center.maybe_auto_check,self,"network_restored")
             end
         end
         self:_schedule_hibernated_download_resume("network restored")

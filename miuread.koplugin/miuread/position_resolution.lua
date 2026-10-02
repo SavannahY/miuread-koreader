@@ -128,6 +128,85 @@ function M.prefer_nonstale_remote(incoming, stored, clock_skew_grace)
     return incoming,"incoming_not_proven_stale"
 end
 
+
+local POSITION_SNAPSHOT_FIELDS = {
+    "progress","percent","raw_progress","raw_percent","protocol_progress","display_progress",
+    "chapter_uid","chapterUid","chapter_idx","chapter_index","chapterIdx",
+    "canonical_offset","chapter_offset","offset","chapterOffset","offset_basis","position_basis",
+    "native_offset","chapter_word_count","total_word_count","words_before","chapter_percent","chapter_ratio",
+    "summary","safe","precise","standalone","source","selection_reason","conflict",
+    "updated_at","updated","fetched_at","captured_at","submitted_at","server_updated","saved_at",
+    "progress_sequence","progress_epoch","display_progress_quality","display_catalog_source","display_page_token",
+    "precision_ms","precision_anchor","precision_anchor_chars","precision_chapter_chars","precision_cache_hit",
+    "inverse_chapter_uid","inverse_chapter_offset","mapping_error","pending_reason","coordinate_captured_at",
+}
+
+-- Durable position state must remain scalar-only. Runtime remote-progress objects
+-- may contain a diagnostic `sources` graph where sources.web points back to the
+-- selected remote table itself. Persisting that graph creates cycles and can make
+-- Store's deep merge recurse until LuaJIT overflows the stack.
+function M.snapshot(value)
+    if type(value)~="table" then return nil end
+    local out={}
+    for _,key in ipairs(POSITION_SNAPSHOT_FIELDS) do
+        local item=rawget(value,key)
+        local kind=type(item)
+        if kind=="string" or kind=="number" or kind=="boolean" then out[key]=item end
+    end
+    return out
+end
+
+local function scalar_table(value, fields)
+    if type(value)~="table" then return nil end
+    local out={}
+    for _,key in ipairs(fields) do
+        local item=rawget(value,key)
+        local kind=type(item)
+        if kind=="string" or kind=="number" or kind=="boolean" then out[key]=item end
+    end
+    return next(out) and out or nil
+end
+
+function M.state_snapshot(state)
+    state=type(state)=="table" and state or {}
+    local out={version=tonumber(rawget(state,"version")) or 1}
+    out.local_position=M.snapshot(rawget(state,"local_position"))
+    out.remote_position=M.snapshot(rawget(state,"remote_position"))
+    out.verified_anchor=M.snapshot(rawget(state,"verified_anchor"))
+    out.resolved=scalar_table(rawget(state,"resolved"),{"source","reason","resolved_at"})
+    out.finished=scalar_table(rawget(state,"finished"),{"local_finished","remote_finished","resolved_finished","source","resolved_at"})
+    return out
+end
+
+-- A cloud observation is not a verified common anchor. Trust only a position
+-- that has durable verification metadata (or an already-resolved aligned state).
+-- This prevents the freshly fetched remote position from being mistaken for the
+-- historical common point during first reconciliation.
+function M.trusted_verified_anchor(session,state)
+    session=type(session)=="table" and session or {}
+    state=type(state)=="table" and state or {}
+    local uid=tostring(session.verified_chapter_uid or "")
+    local co=tonumber(session.verified_chapter_offset)
+    if uid~="" and co~=nil then
+        local base=M.snapshot(state.verified_anchor) or {}
+        base.chapter_uid=uid
+        base.chapter_offset=co
+        base.canonical_offset=co
+        base.offset=co
+        base.progress=tonumber(base.progress or session.verified_local_percent or session.verified_remote_percent)
+        return base
+    end
+    local resolved=type(state.resolved)=="table" and state.resolved or {}
+    local anchor=M.snapshot(state.verified_anchor)
+    if anchor and tostring(anchor.chapter_uid or "")~=""
+        and tonumber(anchor.chapter_offset or anchor.canonical_offset or anchor.offset)~=nil
+        and (session.remote_verified==true or (tonumber(session.verified_at or 0) or 0)>0
+            or (tostring(resolved.source or "")=="aligned" and (tonumber(resolved.resolved_at or 0) or 0)>0)) then
+        return anchor
+    end
+    return nil
+end
+
 function M.resolved_finished(winner, local_percent, remote_percent)
     if winner=="remote" then return (tonumber(remote_percent) or 0)>=100 end
     return (tonumber(local_percent) or 0)>=100

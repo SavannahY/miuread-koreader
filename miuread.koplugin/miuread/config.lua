@@ -1,6 +1,6 @@
 local C = {
     NAME = "觅阅 · 微信读书助手",
-    VERSION = "5.9.0-beta.2",
+    VERSION = "5.9.0-beta.4",
     SCHEMA = 136,
     MIN_SUPPORTED_SCHEMA = 113,
     PLUGIN_DIR = "miuread.koplugin",
@@ -130,7 +130,7 @@ local C = {
 
     -- 5.9 seamless-resume policy. These are strategy constants, not ordinary
     -- user-facing tuning knobs.
-    OPEN_SYNC_SOFT_TIMEOUT_SECONDS = 2.5,
+    OPEN_SYNC_SOFT_TIMEOUT_SECONDS = 6.0,
     OPEN_SYNC_HARD_TIMEOUT_SECONDS = 8,
     LATE_REMOTE_APPLY_WINDOW_SECONDS = 10,
     POSITION_CLOCK_SKEW_GRACE_SECONDS = 120,

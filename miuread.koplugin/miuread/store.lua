@@ -3,6 +3,7 @@ local lfs=require("libs/libkoreader-lfs")
 local LuaSettings=require("luasettings")
 local dump=require("dump")
 local Config=require("miuread.config")
+local PositionResolution=require("miuread.position_resolution")
 local Json=require("miuread.json")
 local DownloadDatabase=require("miuread.download_database")
 local U=require("miuread.util")
@@ -184,7 +185,50 @@ local function compact_progress_sources(row)
             end
         end
     end
+    -- 5.9 position_state is a persistence boundary, not a diagnostic dump.
+    -- Rebuild it from scalar snapshots before any deep merge so a historical
+    -- sources.web -> selected-remote self-reference can never reach U.merge().
+    if type(row.position_state)=="table" then
+        row.position_state=PositionResolution.state_snapshot(row.position_state)
+    end
+    if type(row.local_position_snapshot)=="table" then
+        row.local_position_snapshot=PositionResolution.snapshot(row.local_position_snapshot) or {}
+    end
     return removed
+end
+
+local function position_snapshot_needs_compact(value)
+    if type(value)~="table" then return false end
+    for _,item in pairs(value) do
+        local kind=type(item)
+        if kind=="table" or kind=="function" or kind=="userdata" or kind=="thread" then return true end
+    end
+    return false
+end
+
+local function repair_position_state_storage(sessions)
+    sessions=type(sessions)=="table" and sessions or {}
+    local changed=0
+    for _,row in pairs(sessions) do
+        if type(row)=="table" then
+            local state=rawget(row,"position_state")
+            local dirty=false
+            if type(state)=="table" then
+                dirty=position_snapshot_needs_compact(rawget(state,"local_position"))
+                    or position_snapshot_needs_compact(rawget(state,"remote_position"))
+                    or position_snapshot_needs_compact(rawget(state,"verified_anchor"))
+            end
+            if position_snapshot_needs_compact(rawget(row,"local_position_snapshot")) then dirty=true end
+            if dirty then
+                if type(state)=="table" then row.position_state=PositionResolution.state_snapshot(state) end
+                if type(row.local_position_snapshot)=="table" then
+                    row.local_position_snapshot=PositionResolution.snapshot(row.local_position_snapshot) or {}
+                end
+                changed=changed+1
+            end
+        end
+    end
+    return sessions,changed
 end
 
 local function compact_session_row(row,keep_chapters)
@@ -447,6 +491,19 @@ function Store:new(options)
     local schema_before=tonumber(o.db:readSetting("schema",1)) or 1
     o:migrate()
     if schema_before<Config.SCHEMA then startup_dirty=true end
+    -- beta.4 hotfix: repair any 5.9 beta.1-3 position snapshot that accidentally
+    -- persisted the runtime remote `sources` graph. This runs even when schema
+    -- is already 136 because the corruption is a data-shape bug, not a schema
+    -- migration. Clean stores incur no write.
+    do
+        local sessions=o.db:readSetting("sessions",{}) or {}
+        local repaired,count=repair_position_state_storage(sessions)
+        if count>0 then
+            o.db:saveSetting("sessions",repaired)
+            startup_dirty=true
+            logger.warn("[MiuRead][StoreRepair] position snapshots compacted at startup","sessions=",tostring(count))
+        end
+    end
     -- Do not rewrite miuread.lua on every plugin construction. Persist only a
     -- real first-run/default/schema migration, and never turn a settings write
     -- failure into a plugin-load failure.
@@ -1267,7 +1324,8 @@ function Store:migrate()
                         remote.updated_at=tonumber(remote.updated_at or remote.updated or 0) or 0
                         remote.fetched_at=tonumber(session.remote_checked_at or 0) or 0
                     end
-                    local anchor=type(session.cloud_anchor)=="table" and U.copy(session.cloud_anchor) or nil
+                    local candidate_anchor=type(session.cloud_anchor)=="table" and U.copy(session.cloud_anchor) or nil
+                    local anchor=PositionResolution.trusted_verified_anchor(session,{verified_anchor=candidate_anchor})
                     local lp=tonumber(local_snapshot and local_snapshot.progress or session.progress_local_percent)
                     local rp=tonumber(remote and (remote.percent or remote.progress) or session.progress_remote_percent)
                     local source=tostring(session.progress_resolution_choice or "")
@@ -2156,9 +2214,16 @@ end
 function Store:session(id) return self:get("sessions",{})[tostring(id)] end
 function Store:save_session(id,patch,flush_now)
     local a=self:get("sessions",{}); local k=tostring(id)
-    a[k]=U.merge(a[k] or {},patch or {})
     local library=self:get("library",{}) or {}
     local keep_chapters=not library_catalog_available(library,k)
+    local current=type(a[k])=="table" and a[k] or {}
+    local incoming=type(patch)=="table" and U.copy(patch) or {}
+    -- Compact both sides before deep merge. This repairs already-persisted
+    -- cyclic/bloated 5.9 position state and prevents the merge itself from
+    -- recursing into a diagnostic source graph.
+    compact_session_row(current,keep_chapters)
+    compact_session_row(incoming,keep_chapters)
+    a[k]=U.merge(current,incoming)
     local _,removed=compact_session_row(a[k],keep_chapters)
     if removed>0 then
         logger.info("[MiuRead][StoreRepair] compacted session write",

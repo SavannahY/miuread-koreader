@@ -894,9 +894,14 @@ end
 -- value must not be copied here. Refresh with a margin below the real limit.
 local READER_CONTEXT_MAX_AGE = 240
 
-local function load_reader_context(self,book_id,chapter_uid,require_psvts,keepalive)
+local function load_reader_context(self,book_id,chapter_uid,require_psvts,keepalive,fresh)
     local url=reader_page_url(book_id,chapter_uid)
-    local html,_,final_url=self.http:download(url,{headers={Accept="text/html,application/xhtml+xml"},retries=2,
+    local headers={Accept="text/html,application/xhtml+xml"}
+    if fresh then
+        headers["Cache-Control"]="no-cache, no-store, max-age=0"
+        headers.Pragma="no-cache"
+    end
+    local html,_,final_url=self.http:download(url,{headers=headers,retries=2,
         keepalive=keepalive==true})
     local page_error=login_page_error(html,final_url)
     if page_error then error(page_error) end
@@ -929,8 +934,8 @@ end
 
 -- `keepalive` is set only by the download task, which issues this request and
 -- the four chapter shards back to back against the same origin.
-function Reader:state(book_id,chapter_uid,keepalive)
-    return load_reader_context(self,book_id,chapter_uid,true,keepalive)
+function Reader:state(book_id,chapter_uid,keepalive,fresh)
+    return load_reader_context(self,book_id,chapter_uid,true,keepalive,fresh)
 end
 
 -- Everything a reader page contributes that belongs to the book rather than to
@@ -956,7 +961,19 @@ end
 -- image_archive_* flags into it -- so every chapter must receive its own table.
 -- Only the book-scoped fields are shared, and `url` is rebuilt locally for the
 -- requested chapter instead of being carried over from the cached page.
-function Reader:chapter_state(book_id,chapter_uid,keepalive)
+function Reader:chapter_state(book_id,chapter_uid,keepalive,fresh)
+    -- Translation generation must observe a freshly generated Web Reader page:
+    -- do not let the normal 240 s book-scoped psvts cache hide new enRead data.
+    -- Keep this isolated from the regular download cache so ordinary whole-book
+    -- downloads still retain beta.23+ context reuse and memory behavior.
+    if fresh then
+        local fetched_at=os.time()
+        local state=book_scoped_context(self:state(book_id,chapter_uid,keepalive,true))
+        state.url=reader_page_url(book_id,chapter_uid)
+        state.context_fetched_at=fetched_at
+        return state
+    end
+
     local cached=self._reader_context
     local usable=cached and tostring(cached.book_id)==tostring(book_id)
         and os.time()-(tonumber(cached.fetched_at) or 0) < READER_CONTEXT_MAX_AGE
@@ -964,7 +981,7 @@ function Reader:chapter_state(book_id,chapter_uid,keepalive)
     if not usable then
         self._reader_context={
             book_id=tostring(book_id),
-            context=book_scoped_context(self:state(book_id,nil,keepalive)),
+            context=book_scoped_context(self:state(book_id,nil,keepalive,false)),
             fetched_at=os.time(),
         }
         cached=self._reader_context
@@ -1022,11 +1039,13 @@ function Reader:catalog(book_id, request_options)
     error(result)
 end
 
-function Reader:shard(path, book_id, chapter_uid, psvts, style, keepalive)
-    local body = Protocol.content_fields(book_id, chapter_uid, psvts, style)
+function Reader:shard(path, book_id, chapter_uid, psvts, style, keepalive, context)
+    local body = Protocol.content_fields(book_id, chapter_uid, psvts, style, context)
+    local headers={Origin=BASE, Referer=Protocol.reader_url(book_id, chapter_uid), ["Content-Type"]="application/json;charset=UTF-8"}
+    if context and context.translation then headers["Cache-Control"]="no-cache, no-store, max-age=0"; headers.Pragma="no-cache" end
     local raw, code = self.http:request{
         url=BASE .. path, method="POST", body=Json.encode(body), retries=3,
-        headers={Origin=BASE, Referer=Protocol.reader_url(book_id, chapter_uid), ["Content-Type"]="application/json;charset=UTF-8"},
+        headers=headers,
         keepalive=keepalive==true,
     }
     if code < 200 or code >= 300 then error(path .. " failed: HTTP " .. tostring(code)) end
@@ -1040,9 +1059,10 @@ function Reader:_txt_once(book, chapter, opt, state)
     opt = opt or {}
     local id = tostring(book.bookId or book.book_id)
     local uid = chapter.chapterUid or chapter.uid
-    state = state or self:chapter_state(id, uid, opt.keepalive)
-    local a = self:shard("/web/book/chapter/t_0", id, uid, state.psvts, false, opt.keepalive)
-    local ok_b, b = pcall(self.shard, self, "/web/book/chapter/t_1", id, uid, state.psvts, false, opt.keepalive)
+    state = state or self:chapter_state(id, uid, opt.keepalive,opt.translation==true)
+    local context=opt.translation and {translation=true,pclts=state.pclts,compatibility=opt.translation_compatibility} or nil
+    local a = self:shard("/web/book/chapter/t_0", id, uid, state.psvts, false, opt.keepalive,context)
+    local ok_b, b = pcall(self.shard, self, "/web/book/chapter/t_1", id, uid, state.psvts, false, opt.keepalive,context)
     if not ok_b then b = "" end
     local xhtml = Codec.text_xhtml(Codec.decode_parts({a, b}))
     if not has_readable_content(xhtml, false) then error("decoded TXT chapter is empty") end
@@ -1058,14 +1078,15 @@ function Reader:_epub_once(book, chapter, opt, state)
     opt = opt or {}
     local id = tostring(book.bookId or book.book_id)
     local uid = chapter.chapterUid or chapter.uid
-    state = state or self:chapter_state(id, uid, opt.keepalive)
+    state = state or self:chapter_state(id, uid, opt.keepalive,opt.translation==true)
+    local context=opt.translation and {translation=true,pclts=state.pclts,compatibility=opt.translation_compatibility} or nil
 
-    local a = self:shard("/web/book/chapter/e_0", id, uid, state.psvts, false, opt.keepalive)
+    local a = self:shard("/web/book/chapter/e_0", id, uid, state.psvts, false, opt.keepalive,context)
     if a:match("^%s*{") and a:find('"bookId"', 1, true) then
         return self:_txt_once(book, chapter, opt, state)
     end
-    local b = self:shard("/web/book/chapter/e_1", id, uid, state.psvts, false, opt.keepalive)
-    local c = self:shard("/web/book/chapter/e_3", id, uid, state.psvts, false, opt.keepalive)
+    local b = self:shard("/web/book/chapter/e_1", id, uid, state.psvts, false, opt.keepalive,context)
+    local c = self:shard("/web/book/chapter/e_3", id, uid, state.psvts, false, opt.keepalive,context)
     local xhtml = Codec.decode_parts({a, b, c})
     -- Keep the exact decrypted XHTML before image localization, body extraction
     -- or any MiuRead rewrite. This is the missing reference required to compare
@@ -1076,7 +1097,7 @@ function Reader:_epub_once(book, chapter, opt, state)
     state.coord_html = AnnotationCoord.fromDownloadedXhtml(xhtml)
 
     local css = "body{line-height:1.7;margin:5%;}img{max-width:100%;height:auto;}"
-    local ok_style, style_raw = pcall(self.shard, self, "/web/book/chapter/e_2", id, uid, state.psvts, true, opt.keepalive)
+    local ok_style, style_raw = pcall(self.shard, self, "/web/book/chapter/e_2", id, uid, state.psvts, true, opt.keepalive,context)
     if ok_style and not style_raw:match("^%s*{") then
         local ok, value = pcall(Codec.decode_parts, {style_raw})
         if ok and value ~= "" then css = value end
@@ -1188,9 +1209,9 @@ function Reader:_chapter_once(book, chapter, format, opt)
     opt = opt or {}
     local id = tostring(book.bookId or book.book_id)
     local uid = chapter.chapterUid or chapter.uid
-    local state = self:chapter_state(id, uid, opt.keepalive)
+    local state = self:chapter_state(id, uid, opt.keepalive,opt.translation==true)
 
-    if format == "txt" then
+    if format == "txt" and not opt.translation then
         local ok, a, b, c, d = pcall(self._txt_once, self, book, chapter, opt, state)
         if ok then return a, b, c, d end
         if is_empty_error(a) and not is_auth_error(a) then
@@ -1199,15 +1220,48 @@ function Reader:_chapter_once(book, chapter, format, opt)
         error(a)
     end
 
-    local ok, a, b, c, d = pcall(self._epub_once, self, book, chapter, opt, state)
-    if ok then return a, b, c, d end
+    local function fetch_epub(options)
+        if not options.translation then
+            return pcall(self._epub_once,self,book,chapter,options,state)
+        end
+        local request_state={}
+        for key,value in pairs(state) do request_state[key]=value end
+        local ok,a,b,c,d=pcall(self._epub_once,self,book,chapter,options,request_state)
+        if ok and options.translation and options.require_translation~=false then
+            local ready,parse_error=require("miuread.translation_generation").content_ready(Codec.body_fragment(a))
+            if not ready then return false,"[MiuReadTranslationContentPending] "..tostring(parse_error or "") end
+        end
+        return ok,a,b,c,d
+    end
+    local ok, a, b, c, d = fetch_epub(opt)
+    if not ok and opt.translation and (is_empty_error(a)
+        or tostring(a):find("[MiuReadTranslationContentPending]",1,true)) then
+        -- Some imported books return an empty browser shard after enRead.
+        -- Retry the established content request on the same fresh page, then
+        -- verify actual translated text. Never turn this failure into a TOC.
+        local compatible={}
+        for key,value in pairs(opt) do compatible[key]=value end
+        compatible.translation_compatibility=true
+        self:cleanup_transient_images()
+        logger.info("[MiuRead][Translation] retrying compatible chapter content request","chapter=",tostring(uid))
+        ok,a,b,c,d=fetch_epub(compatible)
+    end
+    if ok then
+        return a, b, c, d
+    end
     local epub_error = a
     if not is_empty_error(epub_error) then error(epub_error) end
 
     logger.warn("[MiuRead][Reader] EPUB content empty; trying TXT fallback", "chapter=", tostring(uid), "title=", tostring(chapter.title or ""))
     local txt_ok, ta, tb, tc, td = pcall(self._txt_once, self, book, chapter, opt, state)
-    if txt_ok then return ta, tb, tc, td end
+    if txt_ok then
+        if opt.translation and opt.require_translation~=false and not require("miuread.translation_generation").content_ready(Codec.body_fragment(ta)) then
+            error("[MiuReadTranslationContentPending]")
+        end
+        return ta, tb, tc, td
+    end
     if is_empty_error(ta) and not is_auth_error(ta) then
+        if opt.translation then error("[MiuReadTranslationContentPending] empty chapter="..tostring(uid)) end
         error(CONFIRMED_EMPTY .. ": EPUB=" .. tostring(epub_error) .. "; TXT=" .. tostring(ta))
     end
     error(tostring(epub_error) .. "; TXT fallback: " .. tostring(ta))
@@ -1235,21 +1289,29 @@ function Reader:chapter(book, chapter, format, opt)
         end
 
         if is_confirmed_empty_error(a) then
-            empty_count = empty_count + 1
-            local metadata_structure = is_structure_chapter(chapter)
-            local words = tonumber(chapter.wordCount or chapter.word_count or 0) or 0
-            -- Parent/title nodes are accepted immediately. Any other catalog
-            -- item is accepted only after three independent EPUB+TXT empty
-            -- confirmations. Catalog word counts are advisory and are often
-            -- non-zero for illustration, divider and legacy placeholder pages.
-            local required = metadata_structure and 1 or 3
-            if empty_count >= required then
-                local state = {content_format="structure", structural=true, catalog_word_count=words}
-                logger.info("[MiuRead][Reader] confirmed empty catalog item converted to structure page",
-                    "chapter=", tostring(uid), "title=", tostring(chapter.title or ""),
-                    "confirmations=", tostring(empty_count), "metadata=", tostring(metadata_structure),
-                    "word_count=", tostring(words), "catalog_mismatch=", tostring(words > 0))
-                return structure_xhtml(chapter.title or ""), PART_CSS, {}, state
+            if opt and opt.translation then
+                -- A translated refresh targets an existing chapter. Directory
+                -- metadata (including parents with wordCount > 0) cannot prove
+                -- that its original text is safe to replace with an empty page.
+                a="[MiuReadTranslationContentPending] empty chapter="..tostring(uid)
+                last=a
+            else
+                empty_count = empty_count + 1
+                local metadata_structure = is_structure_chapter(chapter)
+                local words = tonumber(chapter.wordCount or chapter.word_count or 0) or 0
+                -- Parent/title nodes are accepted immediately. Any other catalog
+                -- item is accepted only after three independent EPUB+TXT empty
+                -- confirmations. Catalog word counts are advisory and are often
+                -- non-zero for illustration, divider and legacy placeholder pages.
+                local required = metadata_structure and 1 or 3
+                if empty_count >= required then
+                    local state = {content_format="structure", structural=true, catalog_word_count=words}
+                    logger.info("[MiuRead][Reader] confirmed empty catalog item converted to structure page",
+                        "chapter=", tostring(uid), "title=", tostring(chapter.title or ""),
+                        "confirmations=", tostring(empty_count), "metadata=", tostring(metadata_structure),
+                        "word_count=", tostring(words), "catalog_mismatch=", tostring(words > 0))
+                    return structure_xhtml(chapter.title or ""), PART_CSS, {}, state
+                end
             end
         end
 
@@ -1270,7 +1332,9 @@ function Reader:chapter(book, chapter, format, opt)
             -- Kindle may report Wi-Fi as enabled before the network route and
             -- DNS are usable after resume/restart. Give network failures a
             -- longer recovery window instead of rapidly exhausting retries.
-            if Http.is_network_error(a) then
+            if tostring(a):find("[MiuReadTranslationContentPending]",1,true) then
+                pause(attempt == 1 and 3.0 or 6.0)
+            elseif Http.is_network_error(a) then
                 pause(attempt == 1 and 4.0 or 8.0)
             else
                 pause(attempt == 1 and 0.8 or 1.8)

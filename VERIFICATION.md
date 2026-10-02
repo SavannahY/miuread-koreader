@@ -1,50 +1,33 @@
-# 5.9.0-beta.2 Verification
+# 5.9.0-beta.4 Verification
 
-## Result
+## Real-device failure addressed
 
-- `tools/verify_590_beta2.py`: **19 checks / 0 failures**.
-- Runtime Lua syntax: **137 / 137 files passed** with `texluac -p`.
-- Portable `tools/test_*.lua`: **24 passed**.
-- `tools/test_reader_context.lua`: **environment skip** in this container because the plain LuaTeX runtime does not provide KOReader/LuaJIT's `bit` module; it exits while loading `miuread/protocol.lua`, before assertions execute.
-- Release CHANGELOG parser: **PASS** for `## 5.9.0-beta.2` and 5 bullet items.
-- `.github/workflows/release-beta.yml`: YAML parse **PASS**.
+The uploaded Kindle log reproduced two independent 5.9 sync faults: a cyclic remote `sources` graph persisted into `position_state` could later make `U.merge()` recurse until LuaJIT stack overflow, and a freshly observed cloud position could be mistaken for the historical verified anchor during first reconciliation. beta.4 fixes both paths and adds startup repair for beta.1–beta.3 state already written to disk.
 
-## beta.2-specific invariants
+## Automated results
 
-1. Technical page capture does not create freshness. Runtime resolution no longer falls back from `updated_at` to `captured_at` merely because an EPUB was opened or inspected.
-2. Shelf and Reader use event-level `updated_at` consistently for local freshness.
-3. `prefer_nonstale_remote()` keeps a stored cloud position when a later-arriving response is provably older by server timestamp and differs in exact position.
-4. Timestamp-less cloud responses are not guessed stale; the guard only rejects observations whose older age can be demonstrated.
-5. beta.1 protections remain: latest-wins is not max-percent, user interaction blocks late automatic jumps, remote auto-jump requires exact coordinates, exact verification failure rolls back, and percent-equivalent success remains removed.
-6. Beta Release now runs position/freshness regression tests and `verify_590_beta2.py` before packaging.
-7. CHANGELOG version sections are standardized as `## <version>`; a mistaken `# <version>` produces an actionable workflow error before release creation.
+- Runtime Lua syntax: **139 / 139 PASS** (`texluac -p`).
+- beta.4 hotfix verifier: **30 checks / 0 failures** (`tools/verify_590_beta4.py`).
+- Extension Center UX contract: **24 checks / 0 failures** (`tools/test_extension_center_ux.py`).
+- Critical portable regressions all PASS: position-state hotfix, position resolution, Store repair/shared persistence, clipboard, percent conversion, title metadata, internal links, opening-sync contract, cloud freshness, Schema 136, and terminal-progress guard.
+- Full host `texlua` sweep: **26 PASS / 4 environment-limited**. The four non-runnable tests require LuaJIT `bit` or Lua 5.1 `newproxy` (`test_reader_context.lua`, `test_translation.lua`, `test_translation_fetch.lua`, `test_translation_generation.lua`); no product assertion was reached. GitHub Release CI installs Lua 5.1/LuaJIT and runs these core translation/context regressions before packaging.
+- Optional Python translation harnesses could not run in this container because `lupa` is not installed.
+- Installer ZIP integrity: **PASS**, 261 entries, only `miuread.koplugin/` at the root.
 
-## Portable regression set
+## Hotfix invariants
 
-Passed in this container:
+- Durable `position_state` stores scalar coordinate snapshots only; runtime `sources` graphs cannot be persisted.
+- `Store:save_session()` compacts both current and incoming state before recursive merge.
+- Startup repair compacts beta.1–beta.3 nested/cyclic position snapshots without changing Schema 136.
+- `remote_observed` is never a verified common anchor. Only durable verified/aligned coordinates can become the reconciliation anchor.
+- Resolution context is frozen before the cloud fetch so the just-fetched remote cannot masquerade as history.
+- First reconciliation with no trusted anchor and no durable local event can select a newer timestamped cloud position.
+- Opening soft fallback is **6 seconds**; hard timeout remains 8 seconds, and late-remote user-interaction protection remains enabled.
+- `chapter_uid + co` remains the final success criterion; percent-equivalent success remains disabled.
+- beta.3 translation, Extension Center UX, #117 and #118 protections remain present.
 
-- clipboard
-- cloud freshness contract
-- cloud mirror contract
-- cloud shelf sort
-- digest stream
-- download safety
-- extension catalog/download/install
-- finished resolution
-- generated relink
-- HTTP Keep-Alive
-- long-book anchor
-- online comment likes
-- opening sync contract
-- position resolution
-- progress ratio
-- reading-time recovery
-- schema 136 contract
-- shelf group recovery
-- Store repair/shared
-- terminal progress guard
-- title metadata
+## Package
 
-## Remaining real-device validation
-
-Automated checks cannot prove Kindle/KOReader touch timing or WeRead's real multi-device server ordering. beta.2 should still be tested with: phone-newer, Kindle-newer, network timeout + late response, re-reading after 100%, long-book cross-device resume, and PW5 low-memory/background-download scenarios.
+- Package: `miuread-v5.9.0-beta.4-full.zip`
+- Size: **2,012,490 bytes**
+- SHA-256: `672b252a39baeec8150670528fa321b014be37c0ddffef09b28ad83c77f5f92d`

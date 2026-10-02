@@ -269,8 +269,15 @@ jobs:
           sudo apt-get install -y lua5.1 luajit
           find miuread.koplugin -type f -name '*.lua' -print0 | xargs -0 -n1 luac5.1 -p
           lua5.1 tools/test_position_resolution.lua
+          lua5.1 tools/test_position_state_hotfix.lua
+          lua5.1 tools/test_store_repair.lua
           lua5.1 tools/test_cloud_freshness_contract.lua
-          python3 tools/verify_590_beta2.py
+          luajit tools/test_translation.lua
+          luajit tools/test_translation_generation.lua
+          luajit tools/test_translation_fetch.lua
+          luajit tools/test_internal_links.lua
+          python3 tools/test_extension_center_ux.py
+          python3 tools/verify_590_beta4.py
 
       - name: Build beta full package and manifest
         shell: bash

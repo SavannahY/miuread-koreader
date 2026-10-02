@@ -4,6 +4,7 @@ local logger = require("logger")
 local FFIUtil = require("ffi/util")
 local Json = require("miuread.json")
 local Config = require("miuread.config")
+local PositionResolution = require("miuread.position_resolution")
 local ReadReportService = require("miuread.read_report_service")
 local Protocol = require("miuread.protocol")
 local Http = require("miuread.http")
@@ -1942,11 +1943,15 @@ function Sync:clear_verified(reason)
     self.verified_remote_percent = nil
     self.verified_login_session_id = nil
     if old_book then
+        local session=self.store:session(tostring(old_book)) or {}
+        local state=PositionResolution.state_snapshot(session.position_state)
+        state.verified_anchor=nil
         self.store:save_session(tostring(old_book), {
             remote_verified=false, verified_at=nil, verified_reason=tostring(reason or "cleared"),
             verified_local_percent=nil, verified_remote_percent=nil,
             verified_chapter_uid=nil, verified_chapter_offset=nil,
             verified_core_map_hash=nil, verified_catalog_hash=nil,
+            position_state=state,
         })
     end
     logger.info("[MiuRead][Sync] progress verification cleared", tostring(reason or "cleared"))
@@ -2219,16 +2224,16 @@ function Sync:mark_verified(book_id, reason, local_percent, remote_percent, posi
         self.verified_login_session_id = verified_login
     end
     local session_before=self.store:session(book_id) or {}
-    local position_state=type(session_before.position_state)=="table" and U.copy(session_before.position_state) or {version=1}
+    local position_state=PositionResolution.state_snapshot(session_before.position_state)
     position_state.version=1
     if position then
         local previous=type(position_state.local_position)=="table" and position_state.local_position or {}
-        position_state.local_position=U.copy(position)
+        position_state.local_position=PositionResolution.snapshot(position) or {}
         position_state.local_position.updated_at=tonumber(position.updated_at or previous.updated_at or position.captured_at or verified_at) or verified_at
         position_state.local_position.seq=tonumber(session_before.progress_latest_sequence or position.progress_sequence or previous.seq or 0) or 0
     end
     local anchor=type(session_before.cloud_anchor)=="table" and U.copy(session_before.cloud_anchor) or nil
-    if anchor then position_state.verified_anchor=anchor end
+    if anchor then position_state.verified_anchor=PositionResolution.snapshot(anchor) end
     position_state.resolved={source="aligned",reason=tostring(reason or "confirmed"),resolved_at=verified_at}
     local lp=tonumber(position_state.local_position and position_state.local_position.progress)
     local rp=tonumber(position_state.remote_position and (position_state.remote_position.percent or position_state.remote_position.progress))
@@ -2261,10 +2266,10 @@ end
 
 function Sync:_save_local_snapshot(book_id,position)
     if type(position)~="table" or tostring(book_id or "")=="" then return end
-    local snapshot=U.copy(position)
+    local snapshot=PositionResolution.snapshot(position) or {}
     snapshot.captured_at=os.time()
     local session=self.store:session(book_id) or {}
-    local position_state=type(session.position_state)=="table" and U.copy(session.position_state) or {version=1}
+    local position_state=PositionResolution.state_snapshot(session.position_state)
     position_state.version=1
     local previous=type(position_state.local_position)=="table" and position_state.local_position or nil
     local function same_position(a,b)
@@ -2282,7 +2287,7 @@ function Sync:_save_local_snapshot(book_id,position)
     -- A first technical snapshot created merely because the book opened is not
     -- evidence of a new local reading event. Keep freshness unknown (0) until
     -- the position actually changes or a durable progress sequence is created.
-    position_state.local_position=U.copy(snapshot)
+    position_state.local_position=PositionResolution.snapshot(snapshot) or {}
     position_state.local_position.updated_at=event_updated
     position_state.local_position.seq=tonumber(session.progress_latest_sequence or position.progress_sequence or (previous and previous.seq) or 0) or 0
     local lp=tonumber(position_state.local_position.progress)

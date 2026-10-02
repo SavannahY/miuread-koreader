@@ -1,1 +1,1 @@
-5.9.0-beta.2：Cloud Mirror Stabilization。修正 latest-wins freshness：技术性本地快照不再伪造“刚刚更新”；明确更旧的晚到云端响应不会覆盖已知更新状态。书架与开书统一使用事件更新时间，并加固 Beta Release 的 CHANGELOG/回归校验。保留 beta.1 的自动续读、2.5 秒 fallback、晚到云端防突跳、8 秒撤回及 chapter_uid + co 精确验收。
+5.9.0-beta.4：修复 5.9 自动续读的 position_state 循环引用崩溃和首次同步锚点误判；持久化位置改为纯标量快照并可启动自愈，remote_observed 不再冒充 verified_anchor，开书同步等待由 2.5 秒延长至 6 秒。保留 beta.3 的双语翻译、扩展中心、#117/#118 与精确 chapter_uid + co 同步。
