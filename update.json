@@ -1,17 +1,17 @@
 {
-  "version": "5.8.0-beta.26",
-  "name": "觅阅 · 微信读书助手 5.8.0-beta.26 内测版",
+  "version": "5.9.0-beta.1",
+  "name": "觅阅 · 微信读书助手 5.9.0-beta.1 内测版",
   "channel": "beta",
   "package_type": "full",
-  "package_url": "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.8.0-beta.26/miuread-v5.8.0-beta.26-full.zip",
+  "package_url": "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.1/miuread-v5.9.0-beta.1-full.zip",
   "package_urls": [
-    "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.8.0-beta.26/miuread-v5.8.0-beta.26-full.zip",
-    "https://ghfast.top/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.8.0-beta.26/miuread-v5.8.0-beta.26-full.zip",
-    "https://gh-proxy.com/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.8.0-beta.26/miuread-v5.8.0-beta.26-full.zip",
-    "https://ghproxy.net/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.8.0-beta.26/miuread-v5.8.0-beta.26-full.zip"
+    "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.1/miuread-v5.9.0-beta.1-full.zip",
+    "https://ghfast.top/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.1/miuread-v5.9.0-beta.1-full.zip",
+    "https://gh-proxy.com/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.1/miuread-v5.9.0-beta.1-full.zip",
+    "https://ghproxy.net/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.1/miuread-v5.9.0-beta.1-full.zip"
   ],
-  "size": 1991902,
-  "sha256": "b013109b07048159ac75a525e45e4c0aa4f6347ade9cb1bf035e4adefcf346c0",
-  "summary": "稳定性收口：修复评论/书摘剪贴板 table、1%→100% 进度歧义和本地元数据污染，支持刷新恢复丢失的已生成关联，并加强长篇精确定位与低内存下载保护。",
-  "notes": "beta.26 基于 beta.25。#111 修正 setClipboardText 普通函数调用；#115 明确区分微信 0–100 progress 与本地 0–1 ratio，并对非最终有效章节的 100% 上报 fail-closed；#107 增强 OPF numeric entity/CDATA/XML identity 解析并在主页手动刷新时增量恢复 orphan MiuRead EPUB 关联；#114 保持 chapter UID rescue 后必须 chapter_uid+co 精确验证，并在多设备冲突中显示章节与更新时间；#116 重型下载连续两次低内存采样后安全 checkpoint+hibernate。Schema 保持 135。"
+  "size": 2000857,
+  "sha256": "585826544d2efba6d30543875f1d5831a3725cd923bb1c21fb40dd880bd7fdef",
+  "summary": "5.9.0 开始无感云端镜像：开书自动采用最新精确位置，微信书架默认云端顺序，读完状态与位置按 latest-wins 解析，并保留精确 chapter_uid+co 验收与安全撤回。",
+  "notes": "5.9.0-beta.1 基于 5.8.0-beta.26。Schema 136 新增 position_state 双写迁移；开书显示“正在同步最新阅读位置”，2.5 秒软超时后可先读本机，10 秒内云端晚到仅在用户尚未翻页时允许应用；冲突不再弹本机/云端选择框，按 verified anchor、序列与更新时间自动 latest-wins；percent 仍只用于导航，chapter_uid+co 才能验收；账号书架默认 cloudOrder；remote/local/resolved finished 分离；自动跳转提供 8 秒可点击撤回提示。"
 }

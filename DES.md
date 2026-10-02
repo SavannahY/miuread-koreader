@@ -1,38 +1,75 @@
-# 5.8.0-beta.26
+# 5.9.0-beta.1 — Cloud Mirror & Seamless Resume
 
-## 本版定位
+## 目标
 
-Open Issue Cleanup / Stability。基于 beta.25，不引入双语翻译或推荐等新功能。
+5.9.0 将阅读位置同步从“发现本机/云端冲突后让用户选择”升级为无感云端镜像。正常使用时用户只需要点开书籍，觅阅自动解析本机与微信云端哪个状态更新，并在精确定位完成后开放阅读。
 
-## #111 剪贴板
+## 自动 latest-wins
 
-修正 `Device.input.setClipboardText` 调用方式。该 API 是普通函数，评论复制和书摘复制现在只传入字符串，避免剪贴板出现 `table: 0x...` 以及后续输入法异常。beta.25 已有的评论文本正规化继续保留。
+- 不再弹“使用云端位置 / 使用本机位置并上传 / 本次暂不同步位置”。
+- “最新”不是百分比最大。旧 100% 与稍后发生的重读 8% 冲突时，8% 可以成为最新状态。
+- 优先利用 `verified_anchor`、本地 sequence 与 verified sequence 判断哪一侧在最后共同状态之后发生了变化；只有双方都发生变化时才比较真实更新时间。
+- 双方更新时间差小于 120 秒时按时钟误差处理并保守保留本机，避免设备时钟轻微偏差造成突然跳转。
+- 首次建立关系时，单纯“读取本地 EPUB”不会伪造一个当前时间；没有本地未上传事件、没有共同锚点时以可验证云端位置为权威。
+- 读取云端只更新 `fetched_at`，不会把“刚刚查询”冒充为云端位置的 `updated_at`。
 
-## #115 假 100% 防护
+## 打开书籍体验
 
-微信读书 `book.progress` / `remote_progress` 明确按 0–100 百分比转换，和本地 0–1 ratio 分离；数值 `1` 在微信字段中固定表示 1%。兼容 read-report worker 额外增加 100% 终态门禁：只有位于目录最后一个有效章节时才允许提交 100%，否则 fail closed。
+- ReaderReady 后立即显示“正在同步最新阅读位置…”并保护翻页/目录跳转等交互，避免用户已经开始阅读后再被同步结果突然带走。
+- 默认软超时 2.5 秒。云端没有及时返回时先解除遮罩，让用户从本机位置阅读，后台继续完成安全恢复。
+- 云端在软超时后晚到时，只有用户尚未产生阅读交互且仍处于安全窗口内才允许自动应用。
+- 所有自动位置检查（包括网络恢复、休眠恢复）统一遵守“用户已经操作后不得突然跳页”。
+- 软超时已经解除后，后续同步准备不会再次弹第二层阻塞遮罩，也不会重置 late-remote 计时窗口。
 
-下载链路继续保持 read-only：`Downloader` 不调用阅读进度提交接口，下载百分比与阅读百分比在回归测试中分离。
+## 精确定位与失败保护
 
-## #107 元数据与已生成关联
+- percent 只负责粗导航；最终成功仍必须以 `chapter_uid + co` 验收。
+- 保留 chapter UID rescue 纠正长篇书的跨章节偏差，但 rescue 本身永远不能直接 `verified`。
+- 自动选择云端后，如果云端没有可验证的 `chapter_uid + co`，保持本机位置并标记该次云端位置无法安全应用，不会为了自动化使用纯百分比覆盖本机。
+- 如果已经尝试云端跳转但精确验证失败，立即恢复打开前的本机位置，不把用户留在近似落点。
+- `mapped_percent_equivalent` 继续禁用；chapter 正确而 co 不一致时不能靠百分比接近判成功。
 
-OPF identity 字段新增数字 XML entity、CDATA 解析，并避免将 title/author 当 HTML 清理。微信书架已有身份字段不被普通 OPF 覆盖；MiuRead EPUB 继续以 `OEBPS/miuread.json` 和 protected title/author 为最高优先级。
+## 自动跳转撤回
 
-主页手动刷新会检查下载目录中没有 Store 记录的 EPUB 候选，并按单文件增量调度调用现有 `recover_miuread_file()`。只有确实含 MiuRead embedded book id 的 EPUB 才会恢复关联；普通 EPUB 不会被误认成微信书籍。
+- 每次自动应用云端位置之前保存短期 rollback anchor（XPointer、chapter_uid、co、percent）。
+- 精确验证成功后显示约 8 秒可点击“撤回”。
+- 撤回会恢复打开前位置，并将该动作视为新的本地阅读事件，再走正常精确上传流程。
 
-## #114 长篇跨设备定位
+## Schema 136 / position_state
 
-不采用“章节一致即可 verified”的宽松方案。percent 只做初始导航；跳错章节时继续使用 chapter UID rescue，随后必须重新获得 chapter_uid + co 并完成精确验证。多设备冲突提示增加本机/云端章节号与云端更新时间。
+新增每书结构化 `position_state`：
 
-## #116 低内存下载
+- `local_position`：本机精确位置、sequence、真实更新时间。
+- `remote_position`：云端精确位置、真实更新时间与单独的 `fetched_at`。
+- `verified_anchor`：上一次本机与云端确认一致的共同锚点。
+- `resolved`：本次 latest-wins 的 winner、reason 与解析时间。
+- `finished`：`local_finished / remote_finished / resolved_finished`。
 
-重型下载阶段每 5 秒采样一次可用内存；连续两次低于约 72 MB 才请求 checkpoint + hibernate。单次瞬时低内存不会中断任务。原有启动 96 MB / 恢复 72 MB、防网络阻塞 UI、Store 写盘优化等全部保留。
+5.9 beta 阶段继续与旧字段双写；升级迁移只重建 metadata，不主动移动阅读位置、不主动写微信云端。
 
-## Issue 状态建议
+## 微信书架镜像
 
-- #111：可标记 Fixed。
-- #107：建议实机验证“刷新后无需手动打开即可恢复已生成关联”后关闭。
-- #114：建议原 935 章场景复测后关闭。
-- #115：已修明确风险并加终态保护，继续观察是否仍有其他根因。
-- #116：请 PW5 512 MB 设备复测后关闭。
-- #79 / #113：不属于本版。
+- 账号书架默认排序改为“云端顺序”，保留“最近阅读 / 最近加入 / 书名 / 作者”作为用户可选排序。
+- `cloudOrder` / 置顶 / 云端更新时间优先用于稳定还原微信书架顺序；本机单纯打开书不会改变云端排序。
+- 云端书架成员关系与本地 EPUB 所有权继续分离：微信端移出书架不会删除已下载 EPUB；删除本地 EPUB 也不会自动修改微信书架。
+
+## 已读完状态
+
+- `remote_finished`、`local_finished`、`resolved_finished` 与当前位置分离保存。
+- 云端 100% 可以被本地书架继承，但如果之后发生了更新的本地重读事件，latest-wins 可以把当前 resolved progress 降回新的位置。
+- 本机真正读到末尾仍沿用 beta.26 的 terminal guard：只有精确位置位于最后有效章节时才允许上传 100%，防止布局异常把云端误标为已读完。
+
+## 自动恢复
+
+- 重新扫码登录成功后自动执行安全 pending 重试并刷新云端书架。
+- 网络恢复后使用 debounce：主页自动恢复同步/书架；阅读中触发受用户交互保护的自动位置检查。
+- 主页手动刷新继续同时触发安全同步恢复、云端书架刷新、本地扫描与 orphan MiuRead EPUB 关联恢复。
+- 阅读时间继续只重放 `pending_report_safe=true` 的明确未发送秒数，不因 5.9 自动化放宽重复计时保护。
+
+## 继承 5.8.0-beta.26 的稳定性修复
+
+继续保留：#111 剪贴板修复、#115 1%/100% 分域与终态门禁、#107 metadata/orphan relink、#114 长篇 chapter rescue + exact co、#116 低内存下载 hibernate、Store 去重写盘、HTTP Keep-Alive、下载 context/psvts 复用、DNS resolver 恢复及同步失败闭环。
+
+## 本版刻意不纳入
+
+#79 双语翻译与 #113 个性化推荐没有并入 5.9.0-beta.1。它们会同时触及 Reader/Downloader 大面积链路，先隔离验证新的开书生命周期与多设备状态模型。

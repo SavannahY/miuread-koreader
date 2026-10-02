@@ -1,3 +1,11 @@
+# 5.9.0-beta.1 opening/sync performance constraints
+
+- ReaderReady immediately starts a lightweight opening synchronization surface; it does not wait for shelf, comments, covers or other nonessential network work.
+- Cloud progress and local layout preparation may proceed in parallel. The default soft wait is 2.5 seconds; slow cloud access releases the user to the local position instead of blocking opening indefinitely.
+- A late remote result cannot jump after the user has interacted. This removes the previous worst-case experience where a slow request could interrupt active reading.
+- Cloud shelf order uses existing cached/API fields and does not add per-book ordering requests.
+- Position-state migration is local-only and performs no network I/O.
+
 # beta.19 阅读热路径说明
 
 - 60 秒 ReadReport 网络请求继续由后台服务执行。

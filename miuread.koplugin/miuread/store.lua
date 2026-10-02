@@ -35,7 +35,7 @@ local defaults={
              annotations={state="unknown",checked_at=0,error="",code="",failures=0,retry_at=0},
              read_report={state="unknown",checked_at=0,error="",code="",failures=0,retry_at=0},
          }}},
- preferences={images=true,mp_images=false,shelf_covers=true,download_keep_awake=true,download_notice_enabled=false,download_complete_notice=true,download_reader_warning=true,download_reader_policy="ask",chapter_prefetch_enabled=true,chapter_continuous_enabled=true,download_dir="",shelf_section="account",account_shelf_kind="books",shelf_filter={enabled=false,archives={},archive_keys={}},shelf_group_hint={accounts={}},home_ui={enabled=false,layout_version=24,layout_style="desk",show_weread_stats=true,show_local_stats=true,display_size="standard",ui_font_mode="default",ui_font_face="",local_entry_root="",local_entry_version=1,local_browse_version=3,lockscreen_style="frame",lockscreen_last_native_style="frame",lockscreen_provider="native",lockscreen_pending_provider="",lockscreen_dash_source="",lockscreen_native_snapshot={},page_by_section={},source_order={"shelf","device","recent"},visible_sections={shelf=true,device=true,recent=true},library_layout_version=1,library_membership={},library_filters={shelf={source="all",kind="all",locality="all",sort="recent"},device={source="all",kind="all",locality="all",sort="recent"}},weread_group="all",action_items={refresh=true,search=true,downloads=true,sync=true,sleep=true,miuread_settings=true,all_books=false,history=false,file_manager=false,screenshot=false,extensions=false},action_order={"refresh","search","downloads","sync","sleep","miuread_settings","all_books","history","file_manager","screenshot","extensions"},action_layout_version=6,panel_items={wifi=true,bluetooth=false,rotate=true,mp=true,screenshot=false,full_refresh=true,downloads=false,sync=false,miuread_settings=false,koreader_settings=true,koreader_file_manager=false,return_koreader=true,quit=false,restart=true,sleep=true,reboot=false,poweroff=false},panel_order={"wifi","bluetooth","rotate","mp","screenshot","full_refresh","downloads","sync","miuread_settings","koreader_settings","koreader_file_manager","return_koreader","quit","restart","sleep","reboot","poweroff"},panel_layout_version=7,more_expanded=false,network_metadata_user_set=false,network_metadata=true},reader_ui={enabled=true,plugin_mode_enabled=false,show_title=false,show_status=false,show_recent=false,recent_actions={},edge_guard_enabled=true,edge_guard_percent=15,quick_layout_version=11,quick_items={toc=true,progress=true,search=true,back=true,font=true,spacing=true,page=true,comments=true,bookmark=true,highlight=true,thought=true,sync=true},quick_order={"toc","progress","search","back","font","spacing","page","comments","bookmark","highlight","thought","sync"}},notices={reader_download=true,low_battery=true,low_storage=true,full_refresh=true,lockscreen=true,mode_switch=true,mode_environment=true},mode_intro={pending_mode="plugin",pending_reason="first_install",last_confirmed_mode="",confirmed_at=0},memory_mode={enabled=false,previous_known=false,previous_ratio=false},performance_mode={enabled=false,auto_detect=true,last_prompt_at=0,reminders_disabled=false},time_display={mode="device",zone="Asia/Shanghai",offset_minutes=480},thoughts={enabled=true,online_likes=false,font_size=22,font_face="",follow_body_font=false,width_ratio=0.90,height_ratio=0.55,display_mode="native_compact_rounded"},annotation_sync={enabled=false,review_visibility="private",highlight_style=1,highlight_color=0,close_upload_enabled=true},update={manifest=Config.UPDATE_MANIFEST,auto_check=true,interval=Config.AUTO_UPDATE_INTERVAL,last_attempt_at=0,last_success_at=0,last_prompted_version="",restart_mode="ask"},sync={time_enabled=true,progress_enabled=true,progress_mode="close",success_notice_enabled=false,error_notice_enabled=true,manual_only=false,auto_upload=false,pull_on_open=true,check_resume=false,require_verified=false,interval=Config.READ_INTERVAL,idle_timeout=Config.IDLE_TIMEOUT,threshold=Config.REMOTE_THRESHOLD,resume_after=300}},
+ preferences={images=true,mp_images=false,shelf_covers=true,download_keep_awake=true,download_notice_enabled=false,download_complete_notice=true,download_reader_warning=true,download_reader_policy="ask",chapter_prefetch_enabled=true,chapter_continuous_enabled=true,download_dir="",shelf_section="account",account_shelf_kind="books",shelf_filter={enabled=false,archives={},archive_keys={}},shelf_group_hint={accounts={}},home_ui={enabled=false,layout_version=24,layout_style="desk",show_weread_stats=true,show_local_stats=true,display_size="standard",ui_font_mode="default",ui_font_face="",local_entry_root="",local_entry_version=1,local_browse_version=3,lockscreen_style="frame",lockscreen_last_native_style="frame",lockscreen_provider="native",lockscreen_pending_provider="",lockscreen_dash_source="",lockscreen_native_snapshot={},page_by_section={},source_order={"shelf","device","recent"},visible_sections={shelf=true,device=true,recent=true},library_layout_version=1,library_membership={},library_filters={shelf={source="all",kind="all",locality="all",sort="cloud"},device={source="all",kind="all",locality="all",sort="recent"}},weread_group="all",action_items={refresh=true,search=true,downloads=true,sync=true,sleep=true,miuread_settings=true,all_books=false,history=false,file_manager=false,screenshot=false,extensions=false},action_order={"refresh","search","downloads","sync","sleep","miuread_settings","all_books","history","file_manager","screenshot","extensions"},action_layout_version=6,panel_items={wifi=true,bluetooth=false,rotate=true,mp=true,screenshot=false,full_refresh=true,downloads=false,sync=false,miuread_settings=false,koreader_settings=true,koreader_file_manager=false,return_koreader=true,quit=false,restart=true,sleep=true,reboot=false,poweroff=false},panel_order={"wifi","bluetooth","rotate","mp","screenshot","full_refresh","downloads","sync","miuread_settings","koreader_settings","koreader_file_manager","return_koreader","quit","restart","sleep","reboot","poweroff"},panel_layout_version=7,more_expanded=false,network_metadata_user_set=false,network_metadata=true},reader_ui={enabled=true,plugin_mode_enabled=false,show_title=false,show_status=false,show_recent=false,recent_actions={},edge_guard_enabled=true,edge_guard_percent=15,quick_layout_version=11,quick_items={toc=true,progress=true,search=true,back=true,font=true,spacing=true,page=true,comments=true,bookmark=true,highlight=true,thought=true,sync=true},quick_order={"toc","progress","search","back","font","spacing","page","comments","bookmark","highlight","thought","sync"}},notices={reader_download=true,low_battery=true,low_storage=true,full_refresh=true,lockscreen=true,mode_switch=true,mode_environment=true},mode_intro={pending_mode="plugin",pending_reason="first_install",last_confirmed_mode="",confirmed_at=0},memory_mode={enabled=false,previous_known=false,previous_ratio=false},performance_mode={enabled=false,auto_detect=true,last_prompt_at=0,reminders_disabled=false},time_display={mode="device",zone="Asia/Shanghai",offset_minutes=480},thoughts={enabled=true,online_likes=false,font_size=22,font_face="",follow_body_font=false,width_ratio=0.90,height_ratio=0.55,display_mode="native_compact_rounded"},annotation_sync={enabled=false,review_visibility="private",highlight_style=1,highlight_color=0,close_upload_enabled=true},update={manifest=Config.UPDATE_MANIFEST,auto_check=true,interval=Config.AUTO_UPDATE_INTERVAL,last_attempt_at=0,last_success_at=0,last_prompted_version="",restart_mode="ask"},sync={time_enabled=true,progress_enabled=true,progress_mode="close",success_notice_enabled=false,error_notice_enabled=true,manual_only=false,auto_upload=false,pull_on_open=true,auto_latest_position=true,fast_local_fallback=true,check_resume=false,require_verified=false,interval=Config.READ_INTERVAL,idle_timeout=Config.IDLE_TIMEOUT,threshold=Config.REMOTE_THRESHOLD,resume_after=300}},
  library={},sessions={},shelf_cache={raw_books={},raw_mp={},books={},mp={},groups={updated_at=0,authoritative=false,list={},book_groups={}},effective_scope={mode="all",fingerprint="all",updated_at=0},updated_at=0,stream={enabled=false,ids={},hydrated_ids={},total=0,source="",updated_at=0}},cover_index={},cover_guard={active=false,started_at=0,stage="",version=""},update_state={},
  pending_installs={},last_cleanup_result={},read_report_consumed={},recent_reads={version=1,items={}},
  prefetch_cache={},
@@ -1235,6 +1235,58 @@ function Store:migrate()
                 "shelf_filter_recovery=",recovered_reason~="" and recovered_reason or "none",
                 "books_restored=",tostring(recovered_books),
                 "large_shelf_hint_threshold=100")
+        end
+        if schema<136 then
+            -- 5.9.0: introduce a structured position state without changing any
+            -- actual local/cloud reading position during migration. Legacy fields
+            -- remain in place and continue to be dual-written during the beta.
+            local preferences=self.db:readSetting("preferences",{}) or {}
+            preferences.sync=type(preferences.sync)=="table" and preferences.sync or {}
+            if preferences.sync.auto_latest_position==nil then preferences.sync.auto_latest_position=preferences.sync.pull_on_open~=false end
+            if preferences.sync.fast_local_fallback==nil then preferences.sync.fast_local_fallback=true end
+            preferences.sync.pull_on_open=preferences.sync.auto_latest_position~=false
+            preferences.home_ui=type(preferences.home_ui)=="table" and preferences.home_ui or {}
+            local home=preferences.home_ui
+            home.library_filters=type(home.library_filters)=="table" and home.library_filters or {}
+            home.library_filters.shelf=type(home.library_filters.shelf)=="table" and home.library_filters.shelf or {}
+            if tostring(home.library_filters.shelf.sort or "recent")=="recent" then
+                home.library_filters.shelf.sort="cloud"
+            end
+            home.library_layout_version=math.max(2,tonumber(home.library_layout_version or 0) or 0)
+            local sessions=self.db:readSetting("sessions",{}) or {}
+            local migrated=0
+            for _,session in pairs(sessions) do
+                if type(session)=="table" and type(session.position_state)~="table" then
+                    local local_snapshot=type(session.local_position_snapshot)=="table" and U.copy(session.local_position_snapshot) or nil
+                    if local_snapshot then
+                        local_snapshot.seq=tonumber(session.progress_latest_sequence or local_snapshot.progress_sequence or 0) or 0
+                        local_snapshot.updated_at=tonumber(local_snapshot.captured_at or session.progress_decided_at or 0) or 0
+                    end
+                    local remote=type(session.remote)=="table" and U.copy(session.remote) or nil
+                    if remote then
+                        remote.updated_at=tonumber(remote.updated_at or remote.updated or 0) or 0
+                        remote.fetched_at=tonumber(session.remote_checked_at or 0) or 0
+                    end
+                    local anchor=type(session.cloud_anchor)=="table" and U.copy(session.cloud_anchor) or nil
+                    local lp=tonumber(local_snapshot and local_snapshot.progress or session.progress_local_percent)
+                    local rp=tonumber(remote and (remote.percent or remote.progress) or session.progress_remote_percent)
+                    local source=tostring(session.progress_resolution_choice or "")
+                    local lf,rf=(lp or 0)>=100,(rp or 0)>=100
+                    session.position_state={
+                        version=1,
+                        local_position=local_snapshot,
+                        remote_position=remote,
+                        verified_anchor=anchor,
+                        resolved={source=source,reason="migrated",resolved_at=tonumber(session.verified_at or session.progress_resolution_at or 0) or 0},
+                        finished={local_finished=lf,remote_finished=rf,resolved_finished=(source=="local" and lf) or (source~="local" and rf),source=source,resolved_at=tonumber(session.verified_at or session.progress_resolution_at or 0) or 0},
+                    }
+                    migrated=migrated+1
+                end
+            end
+            self.db:saveSetting("preferences",preferences)
+            self.db:saveSetting("sessions",sessions)
+            logger.info("[MiuRead][Migration] schema 135 -> 136 done",
+                "position_states=",tostring(migrated),"shelf_sort=cloud")
         end
         self.db:saveSetting("schema",Config.SCHEMA)
         self._migration_batch=false

@@ -1,3 +1,12 @@
+# 5.9.0-beta.1
+
+- 新增无感 latest-wins 阅读位置解析，取消普通开书的本机/云端选择框。
+- 新增开书同步遮罩、2.5 秒本机 fallback、10 秒 late-remote 安全窗口与用户交互保护。
+- 新增 8 秒自动定位撤回。
+- Schema 136 新增 position_state 双写迁移。
+- 微信书架默认云端顺序；读完状态与当前位置分离解析。
+- 保持 chapter_uid + co 精确验收，不恢复 percent-equivalent。
+
 # 5.8.0-beta.26
 
 - 修复 #111：评论与书摘复制按 KOReader 剪贴板 API 的普通函数签名传递字符串，不再把 `Device.input` table 写入剪贴板。

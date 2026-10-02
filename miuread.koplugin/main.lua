@@ -112,6 +112,7 @@ local LocalMetadata=require("miuread.local_metadata")
 local NetworkMetadata=require("miuread.network_metadata")
 local Async=require("miuread.async")
 local Sync=require("miuread.sync")
+_G.__MIUREAD_POSITION_RESOLUTION=rawget(_G,"__MIUREAD_POSITION_RESOLUTION") or require("miuread.position_resolution")
 local Updater=require("miuread.updater")
 local Cookies=require("miuread.cookies")
 local Thoughts=require("miuread.thoughts")
@@ -1877,6 +1878,7 @@ function Plugin:on_auth_success(name)
     UIManager:scheduleIn(1.2,function()
         if HomeView.is_shown() and not self:_active_reader_ui() then
             self:_sync_home_pending({silent=true,source="auth_success"})
+            self:_home_refresh_remote(true,false)
         end
     end)
 end
@@ -2299,10 +2301,44 @@ function Plugin:_prepare_shelf_rows(rows)
         if id~="" then
             local session=self.store:session(id) or {}
             local snapshot=type(session.local_position_snapshot)=="table" and session.local_position_snapshot or {}
-            local effective=tonumber(session.progress_local_percent)
-                or (snapshot.safe==true and tonumber(snapshot.progress) or nil)
-                or tonumber(session.verified_local_percent)
-            if effective~=nil then b.progress=math.max(0,math.min(100,effective)) end
+            local state=type(session.position_state)=="table" and session.position_state or {}
+            local local_pos=type(state.local_position)=="table" and state.local_position or snapshot
+            local remote_pos=type(state.remote_position)=="table" and U.copy(state.remote_position) or nil
+            local shelf_remote_progress=tonumber(b.remote_progress or b.progress)
+            local shelf_remote_updated=tonumber(b.cloudUpdatedAt or b.readUpdateTime or 0) or 0
+            if shelf_remote_progress~=nil then
+                remote_pos=remote_pos or {}
+                remote_pos.progress=shelf_remote_progress
+                if shelf_remote_updated>=(tonumber(remote_pos.updated_at or remote_pos.updated or 0) or 0) then
+                    remote_pos.updated_at=shelf_remote_updated
+                end
+            end
+            local local_progress=tonumber(session.progress_local_percent)
+                or tonumber(local_pos and local_pos.progress) or tonumber(session.verified_local_percent)
+            local remote_progress=tonumber(b.remote_progress) or tonumber(remote_pos and remote_pos.progress) or tonumber(b.progress)
+            local resolved=_G.__MIUREAD_POSITION_RESOLUTION.decide{
+                local_position=local_pos,remote_position=remote_pos,verified_anchor=state.verified_anchor or session.cloud_anchor,
+                local_seq=tonumber(session.progress_latest_sequence or 0) or 0,
+                verified_seq=tonumber(session.progress_verified_sequence or 0) or 0,
+                local_updated_at=tonumber(local_pos and (local_pos.updated_at or local_pos.captured_at) or 0) or 0,
+                remote_updated_at=tonumber(remote_pos and (remote_pos.updated_at or remote_pos.updated) or b.cloudUpdatedAt or b.readUpdateTime or 0) or 0,
+                clock_skew_grace=Config.POSITION_CLOCK_SKEW_GRACE_SECONDS,
+            }
+            b.remote_progress=remote_progress
+            local persisted_finished=type(state.finished)=="table" and state.finished or {}
+            b.remote_finished=b.remote_finished==true or persisted_finished.remote_finished==true or (remote_progress or 0)>=100
+            b.local_progress=local_progress
+            b.local_finished=persisted_finished.local_finished==true or (local_progress or 0)>=100
+            local winner=tostring(resolved.winner or "")
+            if winner=="local" and local_progress~=nil then b.progress=math.max(0,math.min(100,local_progress))
+            elseif remote_progress~=nil then b.progress=math.max(0,math.min(100,remote_progress))
+            elseif local_progress~=nil then b.progress=math.max(0,math.min(100,local_progress)) end
+            b.resolved_position_source=(winner=="aligned" and "aligned" or winner)
+            if winner=="local" then b.resolved_finished=b.local_finished
+            elseif winner=="remote" then b.resolved_finished=b.remote_finished
+            elseif winner=="aligned" then b.resolved_finished=b.local_finished or b.remote_finished
+            else b.resolved_finished=persisted_finished.resolved_finished==true end
+            b.finished=b.resolved_finished==true
         end
         local removed
         b.cover_path,removed=self.library:cached_cover_path(b.bookId,cover_index)
@@ -3256,7 +3292,7 @@ function Plugin:_home_preferences()
     if type(home.library_membership)~="table" then home.library_membership={}; changed=true end
     if type(home.library_filters)~="table" then home.library_filters={}; changed=true end
     local default_library_filters={
-        shelf={source="all",kind="all",locality="all",sort="recent"},
+        shelf={source="all",kind="all",locality="all",sort="cloud"},
         device={source="all",kind="all",locality="all",sort="recent"},
     }
     for section,defaults in pairs(default_library_filters) do
@@ -7543,7 +7579,7 @@ function Plugin:_home_library_filter_state(section)
     section=section=="device" and "device" or "shelf"
     local home,preferences=self:_home_preferences()
     home.library_filters=type(home.library_filters)=="table" and home.library_filters or {}
-    local defaults={source="all",kind="all",locality="all",sort="recent"}
+    local defaults={source="all",kind="all",locality="all",sort=section=="shelf" and "cloud" or "recent"}
     if type(home.library_filters[section])~="table" then home.library_filters[section]=U.copy(defaults) end
     local state=home.library_filters[section]
     for key,value in pairs(defaults) do if state[key]==nil then state[key]=value end end
@@ -7584,7 +7620,7 @@ function Plugin:_home_library_filter_count(section) return 0 end
 function Plugin:_home_library_sort_label(section)
     local state=self:_home_library_filter_state(section)
     local labels=UnifiedLibrary.sort_labels()
-    return tostring(labels[tostring(state.sort or "recent")] or "最近阅读")
+    return tostring(labels[tostring(state.sort or (section=="shelf" and "cloud" or "recent"))] or (section=="shelf" and "云端顺序" or "最近阅读"))
 end
 function Plugin:_home_library_filter_label(section)
     return "排序"
@@ -7666,11 +7702,11 @@ function Plugin:_home_library_filter_menu(section)
     section=section=="device" and "device" or "shelf"
     local sort_labels=UnifiedLibrary.sort_labels()
     local rows={}
-    for _,choice in ipairs({"recent","added","title","author"}) do
+    for _,choice in ipairs(section=="shelf" and {"cloud","recent","added","title","author"} or {"recent","added","title","author"}) do
         local value=choice
         rows[#rows+1]={
             text=sort_labels[value] or value,radio=true,
-            checked_func=function() return tostring(self:_home_library_filter_state(section).sort or "recent")==value end,
+            checked_func=function() return tostring(self:_home_library_filter_state(section).sort or (section=="shelf" and "cloud" or "recent"))==value end,
             callback=function() self:_home_set_library_filter(section,"sort",value) end,
         }
     end
@@ -14702,7 +14738,8 @@ function Plugin:_show_reader_sync_settings_panel(back_callback)
                     {label="阅读时间",value=sync.time_enabled==true and "已开启 · 首次约15秒，之后每60秒" or "已关闭",value_bold=true,keep_open=true,callback=function() self:toggle_time_sync() end},
                     {label="阅读进度",value=self:progress_upload_mode()=="manual" and "仅手动" or "结束阅读时同步",value_bold=true,callback=function() self:_show_reader_menu_table("阅读进度",self:progress_upload_mode_menu(),return_here) end},
                     {label="批注",value=self:_annotation_close_upload_enabled() and "结束阅读时同步" or "仅手动",value_bold=true,keep_open=true,callback=function() self:toggle_annotation_close_upload() end},
-                    {label="打开时检查云端进度",value=sync.pull_on_open~=false and "已开启" or "已关闭",value_bold=true,keep_open=true,callback=function() self:toggle_pull_on_open() end},
+                    {label="自动同步最新阅读位置",value=(sync.auto_latest_position~=false and sync.pull_on_open~=false) and "已开启" or "已关闭",value_bold=true,keep_open=true,callback=function() self:toggle_pull_on_open() end},
+                    {label="网络较慢时优先快速打开本机位置",value=sync.fast_local_fallback~=false and "已开启" or "已关闭",value_bold=true,keep_open=true,callback=function() self:toggle_fast_local_fallback() end},
                     {label="首次阅读时间同步成功提醒",value=self:_time_first_success_notice_enabled() and "已开启" or "已关闭",value_bold=true,keep_open=true,callback=function() self:toggle_time_first_success_notice() end},
                 }},
             }
@@ -21321,10 +21358,21 @@ function Plugin:progress_upload_mode_menu()
 end
 
 function Plugin:toggle_pull_on_open()
-    local p=self.store:preferences(); p.sync=p.sync or {}
-    p.sync.pull_on_open=not (p.sync.pull_on_open~=false)
-    self:_save_ui_preferences(p,"pull_on_open_toggle")
-    self:status_toast("打开书籍时检查云端进度",p.sync.pull_on_open and "已开启" or "已关闭",3)
+    local p=self.store:preferences()
+    p.sync=type(p.sync)=="table" and p.sync or {}
+    local current=p.sync.auto_latest_position~=false and p.sync.pull_on_open~=false
+    p.sync.auto_latest_position=not current
+    -- Keep the legacy field coherent throughout the 5.9 beta for safe rollback.
+    p.sync.pull_on_open=p.sync.auto_latest_position
+    self:_save_ui_preferences(p,"auto_latest_position_toggle")
+    self:status_toast("自动同步最新阅读位置",p.sync.auto_latest_position and "已开启" or "已关闭",3)
+end
+
+function Plugin:toggle_fast_local_fallback()
+    local p=self.store:preferences(); p.sync=type(p.sync)=="table" and p.sync or {}
+    p.sync.fast_local_fallback=not (p.sync.fast_local_fallback~=false)
+    self:_save_ui_preferences(p,"fast_local_fallback_toggle")
+    self:status_toast("网络较慢时优先快速打开本机位置",p.sync.fast_local_fallback and "已开启" or "已关闭",3)
 end
 
 function Plugin:_annotation_close_upload_enabled()
@@ -22855,7 +22903,8 @@ function Plugin:sync_settings_menu()
         {text="阅读时间",post_text=sync.time_enabled==true and "已开启 · 首次约15秒，之后每60秒" or "已关闭",checked_func=function() return (self.store:preferences().sync or {}).time_enabled==true end,keep_menu_open=true,callback=function() self:toggle_time_sync() end},
         {text="阅读进度",post_text=self:progress_upload_mode_label(),sub_item_table_func=function() return self:progress_upload_mode_menu() end},
         {text="批注",post_text=self:_annotation_close_upload_enabled() and "结束阅读时同步" or "仅手动",checked_func=function() return self:_annotation_close_upload_enabled() end,keep_menu_open=true,callback=function() self:toggle_annotation_close_upload() end},
-        {text="打开时检查云端进度",post_text=sync.pull_on_open~=false and "已开启" or "已关闭",checked_func=function() return (self.store:preferences().sync or {}).pull_on_open~=false end,keep_menu_open=true,callback=function() self:toggle_pull_on_open() end},
+        {text="自动同步最新阅读位置",post_text=(sync.auto_latest_position~=false and sync.pull_on_open~=false) and "已开启" or "已关闭",checked_func=function() local s=(self.store:preferences().sync or {}); return s.auto_latest_position~=false and s.pull_on_open~=false end,keep_menu_open=true,callback=function() self:toggle_pull_on_open() end},
+        {text="网络较慢时优先快速打开本机位置",post_text=sync.fast_local_fallback~=false and "已开启" or "已关闭",checked_func=function() return (self.store:preferences().sync or {}).fast_local_fallback~=false end,keep_menu_open=true,callback=function() self:toggle_fast_local_fallback() end},
         {text="首次阅读时间同步成功提醒",post_text=self:_time_first_success_notice_enabled() and "已开启" or "已关闭",checked_func=function() return self:_time_first_success_notice_enabled() end,keep_menu_open=true,callback=function() self:toggle_time_first_success_notice() end},
     }
 end
@@ -23016,6 +23065,196 @@ function Plugin:_resume_remembered_local_progress(book_id)
     return true
 end
 
+function Plugin:_finish_auto_position_check(book_id,reason)
+    local id=tostring(book_id or "")
+    if id~="" and type(self._position_resolution_contexts)=="table" then self._position_resolution_contexts[id]=nil end
+    if id=="" or tostring(self._auto_position_check_book_id or "")==id then
+        self._auto_position_check_active=false
+        self._auto_position_check_book_id=nil
+        self._auto_position_check_started_at=nil
+        self._auto_position_check_page=nil
+        self._auto_position_check_user_interacted=false
+    end
+    if reason then logger.info("[MiuRead][PositionResolve] automatic check finished","reason=",tostring(reason)) end
+    return true
+end
+
+function Plugin:_open_sync_close(reason, fallback)
+    local dialog=self._open_sync_dialog
+    self._open_sync_dialog=nil
+    if dialog and UIManager:isWidgetShown(dialog) then pcall(UIManager.close,UIManager,dialog) end
+    if self._open_sync_timeout_task then
+        pcall(UIManager.unschedule,UIManager,self._open_sync_timeout_task)
+        self._open_sync_timeout_task=nil
+    end
+    if fallback==true and self._open_sync_timed_out~=true then
+        self._open_sync_timed_out=true
+        self._open_sync_fallback_at=monotonic_wall_time()
+        self._open_sync_fallback_page=self:_reader_current_page()
+        self._open_sync_user_interacted=false
+        self:status_toast("阅读位置同步","未能及时确认云端，已使用本机位置",3)
+    end
+    logger.info("[MiuRead][OpenSync] surface closed","reason=",tostring(reason or "done"),"fallback=",tostring(fallback==true))
+    return true
+end
+
+function Plugin:_open_sync_begin(book_id,title)
+    if tostring(book_id or "")~="" then self._open_sync_book_id=tostring(book_id) end
+    if self._open_sync_dialog and UIManager:isWidgetShown(self._open_sync_dialog) then return true end
+    -- Once the soft timeout released this Reader session, a later identity or
+    -- retry must continue in the background rather than displaying a second
+    -- blocking surface and restarting the late-remote clock.
+    if self._open_sync_timed_out==true and self._open_sync_started_at then return false end
+    self._open_sync_book_id=tostring(book_id or self._open_sync_book_id or "")
+    self._open_sync_timed_out=false
+    self._open_sync_user_interacted=false
+    self._open_sync_started_at=monotonic_wall_time()
+    local text="正在同步最新阅读位置…"
+    local name=U.trim(tostring(title or ""))
+    if name~="" then text=text.."\n"..U.utf8_truncate(name,28,"…") end
+    local dialog=InfoMessage:new{text=text}
+    self._open_sync_dialog=dialog
+    UIManager:show(dialog)
+    local sync_prefs=self.store:preferences().sync or {}
+    local timeout=sync_prefs.fast_local_fallback~=false
+        and (tonumber(Config.OPEN_SYNC_SOFT_TIMEOUT_SECONDS) or 2.5)
+        or (tonumber(Config.OPEN_SYNC_HARD_TIMEOUT_SECONDS) or 8)
+    self:_arm_reader_gesture_guard(timeout+.4,"latest position sync")
+    local generation=tonumber(HOME_SESSION.reader_session_generation or 0) or 0
+    local task
+    task=function()
+        if self._open_sync_timeout_task~=task then return end
+        self._open_sync_timeout_task=nil
+        if tonumber(HOME_SESSION.reader_session_generation or 0)~=generation or not (self.ui and self.ui.document) then return end
+        if self._open_sync_dialog then self:_open_sync_close("soft timeout",true) end
+    end
+    self._open_sync_timeout_task=task
+    UIManager:scheduleIn(timeout,task)
+    logger.info("[MiuRead][OpenSync] surface shown","book=",self._open_sync_book_id)
+    return true
+end
+
+function Plugin:_position_resolution_context(book_id)
+    book_id=tostring(book_id or "")
+    self._position_resolution_contexts=type(self._position_resolution_contexts)=="table" and self._position_resolution_contexts or {}
+    local existing=self._position_resolution_contexts[book_id]
+    if type(existing)=="table" then return existing end
+    local session=self.store:session(book_id) or {}
+    local state=type(session.position_state)=="table" and session.position_state or {}
+    local prior=type(state.local_position)=="table" and state.local_position
+        or (type(session.local_position_snapshot)=="table" and session.local_position_snapshot or {})
+    local context={
+        local_seq=tonumber(session.progress_latest_sequence or 0) or 0,
+        verified_seq=tonumber(session.progress_verified_sequence or 0) or 0,
+        local_updated_at=tonumber(prior.updated_at or prior.captured_at or session.progress_upload_verified_at or 0) or 0,
+        verified_anchor=U.copy(type(state.verified_anchor)=="table" and state.verified_anchor or self.sync:cloud_anchor(book_id)),
+        created_at=monotonic_wall_time(),
+    }
+    self._position_resolution_contexts[book_id]=context
+    return context
+end
+
+function Plugin:_save_position_resolution(book_id,winner,reason,local_position,remote)
+    book_id=tostring(book_id or "")
+    if book_id=="" then return false end
+    local session=self.store:session(book_id) or {}
+    local state=type(session.position_state)=="table" and U.copy(session.position_state) or {version=1}
+    state.version=1
+    if type(local_position)=="table" then
+        local previous=type(state.local_position)=="table" and state.local_position or {}
+        state.local_position=U.copy(local_position)
+        state.local_position.updated_at=tonumber(local_position.updated_at or previous.updated_at
+            or (self:_position_resolution_context(book_id) or {}).local_updated_at or local_position.captured_at or 0) or 0
+        if state.local_position.updated_at<=0 then state.local_position.updated_at=os.time() end
+        state.local_position.seq=tonumber(session.progress_latest_sequence or local_position.progress_sequence or previous.seq or 0) or 0
+    end
+    if type(remote)=="table" then
+        state.remote_position=U.copy(remote)
+        state.remote_position.updated_at=tonumber(remote.updated_at or remote.updated or 0) or 0
+        state.remote_position.fetched_at=os.time()
+    end
+    local resolved_at=os.time()
+    state.resolved={source=tostring(winner or ""),reason=tostring(reason or ""),resolved_at=resolved_at}
+    local lp=tonumber(state.local_position and state.local_position.progress)
+    local rp=tonumber(state.remote_position and state.remote_position.percent or state.remote_position and state.remote_position.progress)
+    local lf=(lp or 0)>=100
+    local rf=(rp or 0)>=100
+    local source=tostring(winner or "")
+    local resolved_finished=(source=="local" and lf) or (source=="remote" and rf)
+        or (source=="aligned" and (lf or rf)) or false
+    state.finished={local_finished=lf,remote_finished=rf,resolved_finished=resolved_finished,source=source,resolved_at=resolved_at}
+    self.store:save_session(book_id,{position_state=state,progress_resolution_choice=source,progress_resolution_at=resolved_at})
+    logger.info("[MiuRead][PositionResolve]","book=",book_id,"winner=",tostring(winner),"reason=",tostring(reason),
+        "local_seq=",tostring(session.progress_latest_sequence or 0),"verified_seq=",tostring(session.progress_verified_sequence or 0),
+        "local_chapter=",tostring(local_position and local_position.chapter_uid or "-"),
+        "remote_chapter=",tostring(remote and remote.chapter_uid or "-"),
+        "local_updated=",tostring((self:_position_resolution_context(book_id) or {}).local_updated_at or 0),
+        "remote_updated=",tostring(remote and remote.updated_at or 0))
+    return true
+end
+
+function Plugin:_current_reader_xpointer()
+    local ui=self.ui; local document=ui and ui.document or nil; local rolling=ui and ui.rolling or nil
+    local xp=rolling and rolling.xpointer or nil
+    if type(xp)=="string" and xp~="" then return xp end
+    if rolling and type(rolling.getBookLocation)=="function" then
+        local ok,value=pcall(rolling.getBookLocation,rolling); if ok and type(value)=="string" and value~="" then return value end
+    end
+    if document and type(document.getXPointer)=="function" then
+        local ok,value=pcall(document.getXPointer,document); if ok and type(value)=="string" and value~="" then return value end
+    end
+    return nil
+end
+
+function Plugin:_remember_position_rollback(book_id,position)
+    if type(position)~="table" then return nil end
+    local row=U.copy(position)
+    row.book_id=tostring(book_id or "")
+    row.xpointer=self:_current_reader_xpointer() or row.xpointer
+    row.expires_at=monotonic_wall_time()+(tonumber(Config.POSITION_UNDO_SECONDS) or 8)
+    self._position_rollback=row
+    return row
+end
+
+function Plugin:_restore_position_rollback(reason,keep_for_user_undo)
+    local row=self._position_rollback
+    if type(row)~="table" then return false end
+    self._position_resolution_applying=true
+    local ok=false
+    if type(row.xpointer)=="string" and row.xpointer~="" then ok=self.sync:jump_xpointer(row.xpointer)==true end
+    if not ok and tonumber(row.progress)~=nil then ok=self.sync:jump(tonumber(row.progress))==true end
+    self._position_resolution_applying=false
+    if keep_for_user_undo~=true then self._position_rollback=nil end
+    logger.info("[MiuRead][PositionResolve] rollback","ok=",tostring(ok),"reason=",tostring(reason or "rollback"))
+    return ok,row
+end
+
+function Plugin:_undo_position_resolution()
+    local row=self._position_rollback
+    if type(row)~="table" or monotonic_wall_time()>(tonumber(row.expires_at) or 0) then
+        self._position_rollback=nil; self:toast("可撤回时间已结束",2); return false
+    end
+    local ok,restored=self:_restore_position_rollback("user undo",false)
+    row=restored or row
+    if ok then
+        row.updated_at=os.time()
+        row.captured_at=row.updated_at
+        self:_save_position_resolution(row.book_id,"local","user_undo_remote_resolution",row,nil)
+        self:status_toast("阅读位置","已撤回到打开前的位置",3)
+        UIManager:scheduleIn(.2,function() if self.ui and self.ui.document then self:upload_local_progress(false) end end)
+        return true
+    end
+    self:status_toast("阅读位置","撤回失败，当前位置未改变",3)
+    return false
+end
+
+function Plugin:_show_position_undo(remote)
+    local seconds=tonumber(Config.POSITION_UNDO_SECONDS) or 8
+    local chapter=tostring(remote and (remote.chapter_idx or remote.chapter_index) or "")
+    local text=chapter~="" and ("已同步到第 "..chapter.." 章") or "已同步到最新阅读位置"
+    StatusToast.show{title="阅读位置",text=text,timeout=seconds,action_text="点此撤回",action_callback=function() self:_undo_position_resolution() end}
+end
+
 function Plugin:ensure_read_report_progress(reason,automatic)
     local prefs=self.store:preferences().sync or {}
     local r=self.sync:record()
@@ -23024,6 +23263,21 @@ function Plugin:ensure_read_report_progress(reason,automatic)
         return false
     end
     local id=tostring(r.book.book_id)
+    if automatic==true then
+        local same_check=tostring(self._auto_position_check_book_id or "")==id and self._auto_position_check_active==true
+        if not same_check then
+            self._position_resolution_contexts=type(self._position_resolution_contexts)=="table" and self._position_resolution_contexts or {}
+            self._position_resolution_contexts[id]=nil
+            self._auto_position_check_active=true
+            self._auto_position_check_book_id=id
+            self._auto_position_check_started_at=monotonic_wall_time()
+            self._auto_position_check_page=self:_reader_current_page()
+            self._auto_position_check_user_interacted=false
+        end
+    end
+    if automatic==true and tostring(reason or ""):find("reader_ready",1,true) then
+        self:_open_sync_begin(id,r.book.title)
+    end
     if automatic~=true and not self:is_online() then
         self:_save_progress_state(id,"waiting_network","等待 Wi-Fi 恢复后读取云端位置",nil,nil)
         self.sync:end_progress_sync("等待网络恢复")
@@ -23056,6 +23310,9 @@ function Plugin:ensure_read_report_progress(reason,automatic)
             end)
         elseif not automatic then
             self:info(message.."。\n\n不会把章节百分比直接当成整书进度上传。\n详细原因已写入同步诊断日志。")
+        elseif kind~="busy" then
+            self:_open_sync_close("local mapping unavailable",true)
+            self:_finish_auto_position_check(id,"local mapping unavailable")
         end
     end
 
@@ -23083,51 +23340,47 @@ function Plugin:ensure_read_report_progress(reason,automatic)
                 self.sync:end_progress_sync("云端位置暂时不可用")
                 if not automatic then
                     self:info("暂时无法读取云端位置。\n\n为了避免覆盖其他设备上的位置，阅读时间仍会独立上传。")
+                else
+                    self:_open_sync_close("remote unavailable",true)
+                    self:_finish_auto_position_check(id,"remote unavailable")
                 end
                 logger.warn("[MiuRead][Sync] remote position unavailable", tostring(remote_err or "unknown"))
                 return
             end
             self._progress_remote_retries[id]=0
-            if automatic==true and self:_local_progress_choice_matches(id,local_position) then
-                local remembered_remote=remote.conflict and ((remote.web and remote.web.percent) or (remote.agent and remote.agent.percent)) or remote.percent
-                self:_save_progress_state(id,"deferred","已选择使用本机位置，继续后台确认",localp,tonumber(remembered_remote))
-                self.sync:end_progress_sync("继续此前已选择的本机位置，不重复询问")
-                self:_resume_remembered_local_progress(id)
-                return
-            end
             if remote.conflict then
                 local webp=remote.web and math.floor((tonumber(remote.web.percent) or 0)+.5) or nil
                 local agentp=remote.agent and math.floor((tonumber(remote.agent.percent) or 0)+.5) or nil
                 self:_save_progress_state(id,"source_conflict","云端两个来源的位置不一致",localp,webp or agentp)
                 self.sync.state="verification_required"
-                self.sync.last_stage="等待选择云端位置来源"
-                self:on_remote_source_conflict(id,localp,remote,automatic==true)
+                self.sync.last_stage="正在自动解析云端位置来源"
+                self:on_remote_source_conflict(id,localp,remote,automatic==true,local_position)
                 return
             end
             local remotep=math.floor((tonumber(remote.percent) or 0)+.5)
             local coordinate_match=self:_remote_matches(remote,local_position)
-            local cmp=self.sync:compare(localp,remote)
             local local_uid=tostring(local_position.chapter_uid or local_position.chapterUid or "")
             local remote_uid=tostring(remote.chapter_uid or remote.chapterUid or "")
             local has_authoritative_coordinates=local_uid~="" and remote_uid~=""
             -- When both sides expose chapter coordinates, those coordinates are
             -- authoritative. A similar whole-book percentage must never hide a
             -- chapter mismatch or a clearly different chapter offset.
-            local aligned=coordinate_match or (not has_authoritative_coordinates and cmp=="same")
+            local aligned=coordinate_match==true and has_authoritative_coordinates
             if aligned then
                 self:_clear_progress_resolution(id)
                 self.sync:mark_verified(id,"positions_aligned",localp,remotep,local_position)
-                self:_save_progress_state(id,"aligned",coordinate_match and "章节位置一致" or "本机与云端位置接近",localp,remotep)
+                self:_save_position_resolution(id,"aligned","exact_position_equal",local_position,remote)
+                self:_save_progress_state(id,"aligned","章节和章节内位置一致",localp,remotep)
                 self.sync:end_progress_sync("位置已确认")
+                if automatic then self:_open_sync_close("positions aligned",false) end
                 if not automatic then
-                    local detail=coordinate_match and "章节和章节内位置一致，无需处理。" or "位置接近，无需处理。"
-                    self:info("本机位置："..localp.."%\n云端位置："..remotep.."%\n\n"..detail)
+                    self:info("本机位置："..localp.."%\n云端位置："..remotep.."%\n\n章节和章节内位置一致，无需处理。")
                 end
                 return
             end
             self:_save_progress_state(id,"different","检测到本机与云端位置不同",localp,remotep)
             self.sync.state="verification_required"
-            self.sync.last_stage="等待选择本机或云端位置"
+            self.sync.last_stage="正在自动解析最新阅读位置"
             self:on_remote_progress(id,localp,remote,automatic==true,local_position)
         end)
     end,{
@@ -23150,7 +23403,8 @@ function Plugin:ensure_read_report_progress(reason,automatic)
         self._progress_check_running=false
         self.sync:end_progress_sync("无法启动章节位置检查")
         self:_save_progress_state(id,"mapping_failed","章节位置后台任务暂时不可用",chapter_percent,nil)
-        if not automatic then self:info("暂时无法启动章节位置检查：\n"..tostring(resolve_error or "后台任务不可用")) end
+        if automatic then self:_open_sync_close("local resolver unavailable",true); self:_finish_auto_position_check(id,"local resolver unavailable")
+        else self:info("暂时无法启动章节位置检查：\n"..tostring(resolve_error or "后台任务不可用")) end
         return false
     end
     return true
@@ -23187,6 +23441,9 @@ function Plugin:_remote_matches(remote,target)
         local percent=tonumber(candidate.percent)
         local candidate_uid=tostring(candidate.chapter_uid or candidate.chapterUid or "")
         local candidate_co=tonumber(candidate.canonical_offset or candidate.offset or candidate.chapter_offset)
+        if target_uid~="" and target_co~=nil and (candidate_uid=="" or candidate_co==nil) then
+            return false,percent,candidate.source,{reason="remote_coordinate_missing",basis=target_basis}
+        end
         if target_uid~="" and candidate_uid~="" and target_uid~=candidate_uid then
             return false,percent,candidate.source,{reason="chapter_uid_mismatch",basis=target_basis}
         end
@@ -23825,14 +24082,18 @@ function Plugin:upload_local_progress(manual,callback)
     return true
 end
 
-function Plugin:_use_remote_position(id,localp,remote)
+function Plugin:_use_remote_position(id,localp,remote,options)
+    options=type(options)=="table" and options or {}
+    local automatic=options.automatic==true
+    local callback=type(options.callback)=="function" and options.callback or function() end
     self:_clear_progress_resolution(id)
     local remotep=tonumber(remote and remote.percent) or 0
     local jumped,jump_error=self.sync:jump_remote(remote)
     if not jumped then
         self:_save_progress_state(id,"remote_jump_unconfirmed","无法跳转到云端位置",localp,remotep)
         self.sync:end_progress_sync("云端位置跳转失败，阅读时间暂缓上传")
-        self:info(tostring(jump_error or "无法跳转到云端阅读位置。").."\n\n当前位置未确认，因此暂不上传阅读时间。")
+        if not automatic then self:info(tostring(jump_error or "无法跳转到云端阅读位置。").."\n\n当前位置未确认，因此暂不上传阅读时间。") end
+        callback(false,jump_error or "jump_failed")
         return false
     end
     local correction_attempt=0
@@ -23845,8 +24106,9 @@ function Plugin:_use_remote_position(id,localp,remote)
                 if not actual_position then
                     self:_save_progress_state(id,"remote_jump_unconfirmed","已跳转，但无法精确确认当前位置",localp,remotep)
                     self.sync:end_progress_sync("云端位置已跳转，但精确位置验证失败")
-                    self:info("已跳到云端位置附近，但暂时无法完成同页级坐标确认。\n\n"
-                        ..U.first_line(tostring(position_error or "精确位置不可用"),160))
+                    if not automatic then self:info("已跳到云端位置附近，但暂时无法完成同页级坐标确认。\n\n"
+                        ..U.first_line(tostring(position_error or "精确位置不可用"),160)) end
+                    callback(false,position_error or "position_unavailable")
                     return
                 end
                 local matched,actual,source,meta=self:_remote_matches(remote,actual_position)
@@ -23863,7 +24125,8 @@ function Plugin:_use_remote_position(id,localp,remote)
                     self.sync:mark_verified(id,"remote_position_selected",math.floor(actualp+.5),tonumber(actual) or remotep,actual_position)
                     self:_save_progress_state(id,"remote_selected","已采用云端位置",actualp,remotep)
                     self.sync:end_progress_sync("已采用云端位置，阅读时间开始同步")
-                    self:status_toast("阅读进度同步","已切换并确认云端位置："..string.format("%.1f",remotep).."%",4)
+                    if not automatic then self:status_toast("阅读进度同步","已切换并确认云端位置："..string.format("%.1f",remotep).."%",4) end
+                    callback(true,actual_position)
                     return
                 end
                 local actual_uid=tostring(actual_position.chapter_uid or "")
@@ -23921,16 +24184,18 @@ function Plugin:_use_remote_position(id,localp,remote)
                 if chapter_anchor_attempted and same_chapter then
                     self:_save_progress_state(id,"remote_jump_unconfirmed","已定位到云端章节，但章节内位置验证失败",actualp,remotep)
                     self.sync:end_progress_sync("已定位到云端章节，但原生坐标仍待精确确认")
-                    self:info("已定位到云端章节，但章节内坐标仍未完全一致。\n\n为避免把近似位置当成精确位置，暂不确认本次进度。")
+                    if not automatic then self:info("已定位到云端章节，但章节内坐标仍未完全一致。\n\n为避免把近似位置当成精确位置，暂不确认本次进度。") end
                 else
                     self:_save_progress_state(id,"remote_jump_unconfirmed","已跳转，但章节内位置验证失败",actualp,remotep)
                     self.sync:end_progress_sync("云端位置仍待精确确认，阅读时间暂缓上传")
-                    self:info("已跳到云端位置附近，但章节内坐标仍未完全一致。\n\n为避免覆盖云端位置，暂不上传阅读时间。")
+                    if not automatic then self:info("已跳到云端位置附近，但章节内坐标仍未完全一致。\n\n为避免覆盖云端位置，暂不上传阅读时间。") end
                 end
+                callback(false,"exact_coordinate_mismatch")
             end,{precise=true,prepare_catalog=true,require_cloud_coordinate=true})
             if not started then
                 self:_save_progress_state(id,"remote_jump_unconfirmed","已跳转，但精确确认任务暂时不可用",localp,remotep)
                 self.sync:end_progress_sync("云端位置精确确认任务暂时不可用")
+                callback(false,"verification_task_unavailable")
             end
         end)
     end
@@ -23938,91 +24203,125 @@ function Plugin:_use_remote_position(id,localp,remote)
     return true
 end
 
-function Plugin:on_remote_source_conflict(id,localp,remote,automatic)
-    if automatic and self._progress_prompted_book_id==tostring(id) then
-        self.sync:end_progress_sync("云端来源冲突等待用户处理")
-        return
+function Plugin:on_remote_source_conflict(id,localp,remote,automatic,local_position)
+    local web,agent=remote and remote.web or nil,remote and remote.agent or nil
+    local wt=tonumber(web and web.updated_at or 0) or 0
+    local at=tonumber(agent and agent.updated_at or 0) or 0
+    local grace=tonumber(Config.POSITION_CLOCK_SKEW_GRACE_SECONDS) or 120
+    local selected,reason
+    if web and agent and wt>0 and at>0 and math.abs(wt-at)>grace then
+        if at>wt then selected,reason=agent,"agent_newer_cloud_source" else selected,reason=web,"web_newer_cloud_source" end
+    elseif web and not agent then selected,reason=web,"web_only_cloud_source"
+    elseif agent and not web then selected,reason=agent,"agent_only_cloud_source"
+    elseif web then selected,reason=web,"cloud_source_clock_ambiguous_web_preferred"
+    else selected,reason=agent,"agent_fallback_cloud_source" end
+    if not selected then
+        self:_save_progress_state(id,"source_conflict","云端两个来源的位置不一致且无法选择可靠记录",localp,nil)
+        self.sync:end_progress_sync("云端来源冲突无法解析")
+        if automatic then self:_open_sync_close("cloud source conflict",true); self:_finish_auto_position_check(id,"cloud source conflict") end
+        return false
     end
-    self._progress_prompted_book_id=tostring(id)
-    local webp=remote.web and math.floor((tonumber(remote.web.percent) or 0)+.5) or nil
-    local agentp=remote.agent and math.floor((tonumber(remote.agent.percent) or 0)+.5) or nil
-    local title="云端阅读位置来源不一致\n\n本机："..localp.."%"
-        .."\n微信读书网页："..tostring(webp or "未获取").."%"
-        .."\n官方接口："..tostring(agentp or "未获取").."%"
-    local dialog,closing_for_action
-    local function defer()
-        self:_save_progress_state(id,"deferred","云端来源不一致，本次暂不处理",localp,webp or agentp)
-        self.sync:end_progress_sync("云端来源冲突尚未确认")
-    end
-    local buttons={}
-    if remote.web then buttons[#buttons+1]={{text="使用云端记录 A "..webp.."%",callback=function()
-        closing_for_action=true; UIManager:close(dialog); self:_use_remote_position(id,localp,remote.web)
-    end}} end
-    if remote.agent then buttons[#buttons+1]={{text="使用云端记录 B "..agentp.."%",callback=function()
-        closing_for_action=true; UIManager:close(dialog); self:_use_remote_position(id,localp,remote.agent)
-    end}} end
-    buttons[#buttons+1]={{text="使用本机并上传 "..localp.."%",callback=function()
-        closing_for_action=true; UIManager:close(dialog); self:upload_local_progress(true)
-    end}}
-    buttons[#buttons+1]={{text="本次暂不处理",callback=function()
-        closing_for_action=true; UIManager:close(dialog); defer()
-    end}}
-    dialog=ButtonDialog:new{title=title,title_align="center",close_callback=function()
-        if not closing_for_action then defer() end
-    end,buttons=buttons}
-    UIManager:show(dialog)
+    logger.warn("[MiuRead][PositionResolve] cloud source conflict auto-resolved",
+        "book=",tostring(id),"reason=",reason,"source=",tostring(selected.source or "-"),
+        "web_updated=",tostring(wt),"agent_updated=",tostring(at))
+    return self:on_remote_progress(id,localp,selected,automatic,local_position)
 end
 
 function Plugin:on_remote_progress(id,localp,remote,automatic,local_position)
-    local remotep=tonumber(remote.percent) or 0
-    if automatic and self._progress_prompted_book_id==tostring(id) then
-        self.sync:end_progress_sync("已提示位置差异，等待用户选择")
-        return
+    id=tostring(id or "")
+    local remotep=tonumber(remote and remote.percent) or 0
+    local context=self:_position_resolution_context(id)
+    local session=self.store:session(id) or {}
+    local state=type(session.position_state)=="table" and session.position_state or {}
+    local timed_out=self._open_sync_timed_out==true and tostring(self._open_sync_book_id or "")==id
+    local late_age=timed_out and (monotonic_wall_time()-(tonumber(self._open_sync_fallback_at) or 0)) or 0
+    if automatic and self._auto_position_check_user_interacted==true and self._position_resolution_applying~=true then
+        self:_save_position_resolution(id,"local","automatic_check_after_user_interaction",local_position,remote)
+        self:_save_progress_state(id,"local_selected","阅读已继续，保留当前本机位置",localp,remotep)
+        self.sync:end_progress_sync("用户已开始阅读，忽略晚到的自动位置切换")
+        if self._open_sync_dialog then self:_open_sync_close("user interacted before remote",false) end
+        self:_finish_auto_position_check(id,"user interaction keeps local")
+        UIManager:scheduleIn(.1,function() if self.ui and self.ui.document then self:upload_local_progress(false) end end)
+        return true
     end
-    self._progress_prompted_book_id=tostring(id)
-    local function chapter_ordinal(position)
-        position=type(position)=="table" and position or {}
-        local uid=tostring(position.chapter_uid or position.chapterUid or "")
-        if uid=="" then return nil end
-        local record=self.sync and self.sync:record() or nil
-        local map=record and record.record and record.record.chapter_map or nil
-        if type(map)~="table" then return nil end
-        for index,row in ipairs(map) do
-            if type(row)=="table" and row.structural~=true
-                and tostring(row.uid or row.chapterUid or row.chapter_uid or "")==uid then
-                return index
-            end
+    if automatic and timed_out then
+        if self._open_sync_user_interacted==true or late_age>(tonumber(Config.LATE_REMOTE_APPLY_WINDOW_SECONDS) or 10) then
+            self:_save_position_resolution(id,"local",self._open_sync_user_interacted and "late_remote_after_user_interaction" or "late_remote_window_expired",local_position,remote)
+            self:_save_progress_state(id,"local_selected","已继续使用本机最新位置",localp,remotep)
+            self.sync:end_progress_sync("云端结果晚到，本机阅读已继续")
+            self:_finish_auto_position_check(id,"late remote kept local")
+            UIManager:scheduleIn(.1,function() if self.ui and self.ui.document then self:upload_local_progress(false) end end)
+            return true
         end
-        return nil
     end
-    local local_ordinal=chapter_ordinal(local_position)
-    local remote_ordinal=chapter_ordinal(remote)
-    local local_line="本机位置："..string.format("%.1f",tonumber(localp) or 0).."%"
-    local remote_line="云端位置："..string.format("%.1f",remotep).."%"
-    if local_ordinal then local_line=local_line.." · 第 "..tostring(local_ordinal).." 章" end
-    if remote_ordinal then remote_line=remote_line.." · 第 "..tostring(remote_ordinal).." 章" end
-    local updated=tonumber(remote and remote.updated_at or 0) or 0
-    if updated>0 then remote_line=remote_line.." · "..self:_relative_time(updated) end
-    local text="检测到阅读位置不同\n\n"..local_line.."\n"..remote_line
-    local dialog,closing_for_action
-    local function defer()
-        self:_save_progress_state(id,"deferred","本次暂不处理位置差异",localp,remotep)
-        self.sync:end_progress_sync("位置差异尚未确认，阅读时间暂缓上传")
+
+    local result=_G.__MIUREAD_POSITION_RESOLUTION.decide{
+        local_position=local_position,remote_position=remote,verified_anchor=context.verified_anchor or state.verified_anchor or session.cloud_anchor,
+        local_seq=context.local_seq or session.progress_latest_sequence,verified_seq=context.verified_seq or session.progress_verified_sequence,
+        local_updated_at=context.local_updated_at,remote_updated_at=tonumber(remote and (remote.updated_at or remote.updated) or 0) or 0,
+        clock_skew_grace=Config.POSITION_CLOCK_SKEW_GRACE_SECONDS,
+    }
+    local winner=tostring(result.winner or "local")
+    local reason=tostring(result.reason or "unknown")
+    local remote_uid=tostring(remote and (remote.chapter_uid or remote.chapterUid) or "")
+    local remote_co=tonumber(remote and (remote.canonical_offset or remote.offset or remote.chapter_offset))
+    if winner=="remote" and (remote_uid=="" or remote_co==nil) then
+        winner="local"
+        reason="remote_exact_coordinate_missing_local_safe"
+        logger.warn("[MiuRead][PositionResolve] remote winner rejected; exact coordinate missing",
+            "book=",id,"remote_uid=",remote_uid~="" and remote_uid or "-","remote_co=",tostring(remote_co or "-"))
     end
-    dialog=ButtonDialog:new{title=text,title_align="center",close_callback=function()
-        if not closing_for_action then defer() end
-    end,buttons={
-        {{text="使用云端位置",callback=function()
-            closing_for_action=true; UIManager:close(dialog); self:_use_remote_position(id,localp,remote)
-        end}},
-        {{text="使用本机位置并上传",callback=function()
-            closing_for_action=true; UIManager:close(dialog); self:upload_local_progress(true)
-        end}},
-        {{text="本次暂不同步位置",callback=function()
-            closing_for_action=true; UIManager:close(dialog); defer()
-        end}},
-    }}
-    UIManager:show(dialog)
+    self:_save_position_resolution(id,winner,reason,local_position,remote)
+
+    if winner=="aligned" then
+        self.sync:mark_verified(id,"positions_aligned",localp,remotep,local_position)
+        self:_save_progress_state(id,"aligned","本机与云端精确位置一致",localp,remotep)
+        self.sync:end_progress_sync("位置已确认")
+        if automatic then self:_open_sync_close("positions aligned",false); self:_finish_auto_position_check(id,"positions aligned") end
+        return true
+    end
+
+    if winner=="remote" then
+        self:_remember_position_rollback(id,local_position)
+        self._position_resolution_applying=true
+        return self:_use_remote_position(id,localp,remote,{automatic=automatic,local_position=local_position,reason=reason,callback=function(ok,actual_position)
+            self._position_resolution_applying=false
+            if ok then
+                local resolved_local=type(actual_position)=="table" and U.copy(actual_position) or U.copy(local_position)
+                resolved_local.updated_at=tonumber(remote and (remote.updated_at or remote.updated) or 0) or os.time()
+                self:_save_position_resolution(id,"remote",reason,resolved_local,remote)
+                if automatic then self:_open_sync_close("remote position verified",false); self:_finish_auto_position_check(id,"remote verified"); self:_show_position_undo(remote) end
+            elseif automatic then
+                local restored,row=self:_restore_position_rollback("remote exact verification failed",false)
+                if restored and type(row)=="table" then
+                    row.updated_at=tonumber(row.updated_at or row.captured_at or 0) or 0
+                    self:_save_position_resolution(id,"local","remote_verification_failed_rollback",row,remote)
+                    self:_open_sync_close("remote position unverified; rolled back",false)
+                    self:status_toast("阅读位置","云端位置无法精确确认，已保留本机位置",3)
+                else
+                    self:_open_sync_close("remote position unverified",true)
+                end
+                self:_finish_auto_position_check(id,"remote unverified")
+            end
+        end})
+    end
+
+    -- If remote looked fresher but lacks an exact target, fail closed: keep the
+    -- current local page for reading but never overwrite cloud with a guess.
+    if reason=="remote_exact_coordinate_missing_local_safe" then
+        self:_save_progress_state(id,"remote_jump_unconfirmed","云端缺少可精确验证的章节坐标，已保留本机位置",localp,remotep)
+        self.sync:end_progress_sync("云端精确坐标不可用，未覆盖云端")
+        if automatic then self:_open_sync_close("remote exact coordinate unavailable",false); self:_finish_auto_position_check(id,"remote exact unavailable") end
+        return true
+    end
+
+    -- Local wins. Enter reading immediately; upload exact coordinates in the
+    -- background and let cloud readback verification decide success.
+    self:_save_progress_state(id,"local_selected","已采用本机最新位置",localp,remotep)
+    self.sync:end_progress_sync("已采用本机最新位置，后台上传")
+    if automatic then self:_open_sync_close("local position newer",false); self:_finish_auto_position_check(id,"local newer") end
+    UIManager:scheduleIn(.08,function() if self.ui and self.ui.document then self:upload_local_progress(false) end end)
+    return true
 end
 
 function Plugin:_relative_time(ts)
@@ -27176,7 +27475,7 @@ function Plugin:on_sync_record_ready(current)
     end
     UIManager:scheduleIn(2.2,warm_task)
     local sync_prefs=self.store:preferences().sync or {}
-    local need_cloud_check=sync_prefs.pull_on_open~=false
+    local need_cloud_check=sync_prefs.auto_latest_position~=false and sync_prefs.pull_on_open~=false
     if sync_prefs.time_enabled==true then
         self.sync:start("reader_ready_time_only")
     end
@@ -27203,6 +27502,8 @@ function Plugin:on_sync_record_ready(current)
     end
 end
 function Plugin:on_sync_record_missing()
+    if self._open_sync_dialog then self:_open_sync_close("sync record missing",false) end
+    self:_finish_auto_position_check(self._open_sync_book_id,"sync record missing")
     logger.dbg("[MiuRead][Sync] external EPUB ignored")
 end
 function Plugin:_reader_rebuild_cancel(reason,clear_shared)
@@ -27599,6 +27900,14 @@ function Plugin:onReaderReady()
     end
     if not preserve_session then
         HOME_SESSION.reader_session_generation=(tonumber(HOME_SESSION.reader_session_generation) or 0)+1
+        self._position_resolution_contexts={}
+        self._auto_position_check_active=false
+        self._auto_position_check_book_id=nil
+        self._auto_position_check_user_interacted=false
+        self._open_sync_timed_out=false
+        self._open_sync_user_interacted=false
+        self._open_sync_fallback_page=nil
+        self._position_rollback=nil
     end
     HOME_SESSION.reader_session_active=true
     HOME_SESSION.reader_session_file=ready_path
@@ -27622,9 +27931,20 @@ function Plugin:onReaderReady()
     self:_mark_reader_busy(3)
     logger.info("[MiuRead][Sync] reader ready","session=",tostring(self._reader_session_generation or 0),
         "rebuild=",tostring(had_candidate==true),"preserved=",tostring(preserve_session==true))
-    self:_arm_reader_gesture_guard(preserve_session==true and .20
-        or tonumber(Config.READER_OPEN_GESTURE_GUARD_SECONDS) or .75,
-        continuous_switch and "chapter switch" or (preserve_session==true and "reader rebuild" or "reader open"))
+    local open_sync_prefs=self.store:preferences().sync or {}
+    local open_sync_requested=self:_reader_session_is_weread() and preserve_session~=true
+        and open_sync_prefs.auto_latest_position~=false and open_sync_prefs.pull_on_open~=false
+    local guard_seconds=preserve_session==true and .20 or tonumber(Config.READER_OPEN_GESTURE_GUARD_SECONDS) or .75
+    if open_sync_requested then
+        guard_seconds=math.max(guard_seconds,(tonumber(Config.OPEN_SYNC_SOFT_TIMEOUT_SECONDS) or 2.5)+.4)
+    end
+    self:_arm_reader_gesture_guard(guard_seconds,
+        continuous_switch and "chapter switch" or (preserve_session==true and "reader rebuild" or (open_sync_requested and "latest position sync" or "reader open")))
+    if open_sync_requested then
+        local opening_book
+        if ready_path then opening_book=select(1,self.store:file_record_fast(ready_path,false)) end
+        self:_open_sync_begin(opening_book and (opening_book.book_id or opening_book.bookId) or "",opening_book and opening_book.title or "")
+    end
     -- ReaderUI already paints its first page. Avoid a second forced full-screen
     -- refresh, which was the visible extra flash after opening a book.
     self:_finish_page_transition(1.2,"reader first page")
@@ -27886,8 +28206,44 @@ end
 
 function Plugin:onScreenResize() return self:onSetDimensions() end
 function Plugin:onRotation() return self:onSetDimensions() end
+function Plugin:onNetworkConnected()
+    self._network_recovery_generation=(tonumber(self._network_recovery_generation) or 0)+1
+    local generation=self._network_recovery_generation
+    UIManager:scheduleIn(.8,function()
+        if generation~=tonumber(self._network_recovery_generation) then return end
+        if HomeView.is_shown() and not self:_active_reader_ui() then
+            self:_sync_home_pending({silent=true,source="network_restored"})
+            if tostring(self._home_active_section or "shelf")=="shelf" then self:_home_refresh_remote(false,false) end
+        elseif self.ui and self.ui.document and self:_reader_session_is_weread() then
+            local prefs=self.store:preferences().sync or {}
+            if prefs.auto_latest_position~=false and not self._progress_check_running then
+                self:ensure_read_report_progress("network_restored",true)
+            end
+        end
+        self:_schedule_hibernated_download_resume("network restored")
+    end)
+    return false
+end
+
+function Plugin:onNetworkDisconnected()
+    logger.info("[MiuRead][Network] disconnected; safe sync remains durable")
+    return false
+end
+
 function Plugin:onPageUpdate(page)
     local weread=self:_reader_session_is_weread()
+    if weread and self._auto_position_check_active==true and self._position_resolution_applying~=true
+        and self._auto_position_check_started_at and monotonic_wall_time()>(tonumber(self._auto_position_check_started_at) or 0)+.15 then
+        local baseline=tonumber(self._auto_position_check_page)
+        local current=tonumber(page) or self:_reader_current_page()
+        if baseline==nil or (current~=nil and current~=baseline) then self._auto_position_check_user_interacted=true end
+    end
+    if weread and self._open_sync_timed_out==true and self._position_resolution_applying~=true
+        and self._open_sync_fallback_at and monotonic_wall_time()>(tonumber(self._open_sync_fallback_at) or 0)+.25 then
+        local baseline=tonumber(self._open_sync_fallback_page)
+        local current=tonumber(page) or self:_reader_current_page()
+        if baseline==nil or (current~=nil and current~=baseline) then self._open_sync_user_interacted=true end
+    end
     -- Only WeRead sessions need to signal the independent 60 s report service.
     -- Ordinary local books keep beta.1's memory-only page-turn path.
     self:_mark_reader_busy(weread and 3 or 2,weread and "fast" or nil)
@@ -29535,7 +29891,7 @@ function Plugin:onResume()
         return
     end
     local prefs=self.store:preferences().sync or {}
-    local recheck=prefs.pull_on_open~=false and slept>=math.max(60,tonumber(prefs.resume_after) or 300)
+    local recheck=prefs.auto_latest_position~=false and prefs.pull_on_open~=false and slept>=math.max(60,tonumber(prefs.resume_after) or 300)
     if recheck then
         self._progress_prompted_book_id=nil
         -- Keep the last verified state visible while wake-up revalidation runs.

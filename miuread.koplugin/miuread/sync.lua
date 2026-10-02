@@ -2151,12 +2151,20 @@ function Sync:remote(book_id, callback, options)
         end
         if not detached then self.last_error=nil end
         if self.host.on_auth_channel_ok then pcall(self.host.on_auth_channel_ok,self.host,"progress") end
+        local remote_snapshot=strip_progress_sources(remote)
+        local session_before=self.store:session(book_id) or {}
+        local position_state=type(session_before.position_state)=="table" and U.copy(session_before.position_state) or {version=1}
+        position_state.version=1
+        position_state.remote_position=U.copy(remote_snapshot)
+        position_state.remote_position.updated_at=tonumber(remote_snapshot.updated_at or remote_snapshot.updated or 0) or 0
+        position_state.remote_position.fetched_at=os.time()
         self.store:save_session(book_id,{
-            remote=strip_progress_sources(remote),
+            remote=remote_snapshot,
             remote_sources={web=strip_progress_sources(web),agent=strip_progress_sources(agent)},
             remote_checked_at=os.time(),
             remote_web_error=value.web_error,
             remote_agent_error=value.agent_error,
+            position_state=position_state,
         })
         if not remote.conflict and options.update_cloud_anchor~=false then
             local current_session=self.store:session(book_id) or {}
@@ -2210,6 +2218,22 @@ function Sync:mark_verified(book_id, reason, local_percent, remote_percent, posi
         self.verified_remote_percent = verified_remote
         self.verified_login_session_id = verified_login
     end
+    local session_before=self.store:session(book_id) or {}
+    local position_state=type(session_before.position_state)=="table" and U.copy(session_before.position_state) or {version=1}
+    position_state.version=1
+    if position then
+        local previous=type(position_state.local_position)=="table" and position_state.local_position or {}
+        position_state.local_position=U.copy(position)
+        position_state.local_position.updated_at=tonumber(position.updated_at or previous.updated_at or position.captured_at or verified_at) or verified_at
+        position_state.local_position.seq=tonumber(session_before.progress_latest_sequence or position.progress_sequence or previous.seq or 0) or 0
+    end
+    local anchor=type(session_before.cloud_anchor)=="table" and U.copy(session_before.cloud_anchor) or nil
+    if anchor then position_state.verified_anchor=anchor end
+    position_state.resolved={source="aligned",reason=tostring(reason or "confirmed"),resolved_at=verified_at}
+    local lp=tonumber(position_state.local_position and position_state.local_position.progress)
+    local rp=tonumber(position_state.remote_position and (position_state.remote_position.percent or position_state.remote_position.progress))
+    position_state.finished={local_finished=(lp or 0)>=100,remote_finished=(rp or 0)>=100,
+        resolved_finished=((lp or 0)>=100 or (rp or 0)>=100),source="aligned",resolved_at=verified_at}
     self.store:save_session(book_id, {
         remote_verified=true, verified_at=verified_at,
         verified_reason=tostring(reason or "confirmed"),
@@ -2222,6 +2246,7 @@ function Sync:mark_verified(book_id, reason, local_percent, remote_percent, posi
         verified_catalog_hash=catalog_hash~="" and catalog_hash or nil,
         report_core_map_hash=core_hash~="" and core_hash or nil,
         progress_local_percent=verified_local, pending=false,
+        position_state=position_state,
     })
     self.store:update_cached_progress(book_id, verified_local)
     logger.info("[MiuRead][Sync] cloud progress verified",
@@ -2238,7 +2263,34 @@ function Sync:_save_local_snapshot(book_id,position)
     if type(position)~="table" or tostring(book_id or "")=="" then return end
     local snapshot=U.copy(position)
     snapshot.captured_at=os.time()
-    self.store:save_session(book_id,{local_position_snapshot=snapshot})
+    local session=self.store:session(book_id) or {}
+    local position_state=type(session.position_state)=="table" and U.copy(session.position_state) or {version=1}
+    position_state.version=1
+    local previous=type(position_state.local_position)=="table" and position_state.local_position or nil
+    local function same_position(a,b)
+        if type(a)~="table" or type(b)~="table" then return false end
+        local au,bu=tostring(a.chapter_uid or a.chapterUid or ""),tostring(b.chapter_uid or b.chapterUid or "")
+        local ac=tonumber(a.canonical_offset or a.chapter_offset or a.offset)
+        local bc=tonumber(b.canonical_offset or b.chapter_offset or b.offset)
+        return au~="" and au==bu and ac~=nil and bc~=nil and math.abs(ac-bc)<=16
+    end
+    local event_updated=tonumber(position.updated_at or 0) or 0
+    if event_updated<=0 and previous then
+        if same_position(previous,snapshot) then event_updated=tonumber(previous.updated_at or 0) or 0
+        else event_updated=snapshot.captured_at end
+    end
+    -- A first technical snapshot created merely because the book opened is not
+    -- evidence of a new local reading event. Keep freshness unknown (0) until
+    -- the position actually changes or a durable progress sequence is created.
+    position_state.local_position=U.copy(snapshot)
+    position_state.local_position.updated_at=event_updated
+    position_state.local_position.seq=tonumber(session.progress_latest_sequence or position.progress_sequence or (previous and previous.seq) or 0) or 0
+    local lp=tonumber(position_state.local_position.progress)
+    local rp=tonumber(position_state.remote_position and (position_state.remote_position.percent or position_state.remote_position.progress))
+    position_state.finished=type(position_state.finished)=="table" and position_state.finished or {}
+    position_state.finished.local_finished=(lp or 0)>=100
+    position_state.finished.remote_finished=position_state.finished.remote_finished==true or (rp or 0)>=100
+    self.store:save_session(book_id,{local_position_snapshot=snapshot,position_state=position_state})
 end
 
 function Sync:_recover_auth_once(channel,error,on_done,force)

@@ -1,7 +1,7 @@
 local C = {
     NAME = "觅阅 · 微信读书助手",
-    VERSION = "5.8.0-beta.26",
-    SCHEMA = 135,
+    VERSION = "5.9.0-beta.1",
+    SCHEMA = 136,
     MIN_SUPPORTED_SCHEMA = 113,
     PLUGIN_DIR = "miuread.koplugin",
     DATA_DIR = "miuread",
@@ -127,6 +127,14 @@ local C = {
     READ_REPORT_MAX_HEALTH_RESTARTS = 2,
     IDLE_TIMEOUT = 600,
     REMOTE_THRESHOLD = 2,
+
+    -- 5.9 seamless-resume policy. These are strategy constants, not ordinary
+    -- user-facing tuning knobs.
+    OPEN_SYNC_SOFT_TIMEOUT_SECONDS = 2.5,
+    OPEN_SYNC_HARD_TIMEOUT_SECONDS = 8,
+    LATE_REMOTE_APPLY_WINDOW_SECONDS = 10,
+    POSITION_CLOCK_SKEW_GRACE_SECONDS = 120,
+    POSITION_UNDO_SECONDS = 8,
 
     -- Coalesce page-turn control snapshots. Reading position stays in memory
     -- and is written at most once per window; suspend/close still flushes now.
