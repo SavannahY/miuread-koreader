@@ -1,3 +1,12 @@
+# 5.8.0-beta.26
+
+- 修复 #111：评论与书摘复制按 KOReader 剪贴板 API 的普通函数签名传递字符串，不再把 `Device.input` table 写入剪贴板。
+- 加固 #115：微信读书 0–100 `progress` 与本地 0–1 ratio 分域处理；`1` 不再把 1% 误判为 100%；非最后有效章节禁止提交 100% 终态。
+- 收口 #107：补齐 OPF 数字实体、CDATA 与 XML identity 解析，保护微信/API 与 MiuRead manifest 标题；主页手动刷新可增量恢复仍在磁盘但丢失 Store 关联的已生成 EPUB。
+- 收口 #114：保留 chapter UID rescue + exact `chapter_uid + co` 验证，percent 仍只负责导航；多设备冲突提示显示本机/云端章节及云端更新时间。
+- 加固 #116：重型下载运行期间连续两次低内存采样后自动保存断点并 hibernate，不因单次内存抖动反复启停。
+- 保留 beta.25 的同步失败闭环、SAFE 阅读时间重试与严格精确定位。
+
 ## 5.8.0-beta.25
 
 - 以 beta.24 为基线收口主页同步状态：用户界面不再暴露 `pending / awaiting confirmation / 待同步 / 待确认` 等内部状态，主页只显示“已同步 / 同步中 N / 同步失败 N”。内部仍保留细分状态与错误原因用于安全恢复和诊断。

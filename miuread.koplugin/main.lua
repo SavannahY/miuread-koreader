@@ -4798,6 +4798,7 @@ function Plugin:_home_manual_refresh()
     if active=="shelf" then
         local remote_started=self:_home_refresh_remote(true,true)
         self:_home_scan_local(true,false)
+        self:_home_relink_generated_files(true)
         if not remote_started and HomeView.is_shown() then self:_notify_home_data_changed("section") end
         return true
     end
@@ -4813,6 +4814,7 @@ function Plugin:_home_manual_refresh()
         -- A refresh only refreshes the configured library. Directory selection
         -- is an explicit settings/file-management action, never a refresh side effect.
         self:_home_scan_local(true,false)
+        self:_home_relink_generated_files(true)
         self:_notify_home_data_changed("section")
         return true
     end
@@ -4848,6 +4850,7 @@ function Plugin:_home_complete_refresh(confirmed)
     self:toast("正在完整更新书架与书籍信息…",3)
     self:_home_refresh_remote(true,false)
     self:_home_scan_local(true)
+    self:_home_relink_generated_files(true)
     UIManager:scheduleIn(.35,function()
         if HomeView.is_shown() and not self:_active_reader_ui() then
             self:_show_miuread_home_now(true,true,true,"content")
@@ -9971,6 +9974,33 @@ function Plugin:_home_refresh_local_directory(path,callback,force,owner)
     if started then return true end
     logger.warn("[MiuRead][LocalBrowser] background read not started",tostring(err))
     return start_incremental(tostring(err or "worker did not start"))
+end
+
+function Plugin:_home_relink_generated_files(user_requested)
+    if self._home_generated_relink_running==true then return false end
+    if not (self.store and type(self.store.orphan_miuread_files)=="function"
+        and type(self.store.recover_miuread_file)=="function") then return false end
+    local ok,paths=pcall(self.store.orphan_miuread_files,self.store,64)
+    if not ok or type(paths)~="table" or #paths==0 then return false end
+    self._home_generated_relink_running=true
+    local index,recovered=1,0
+    local function step()
+        if index>#paths then
+            self._home_generated_relink_running=false
+            if recovered>0 then
+                logger.info("[MiuRead][LocalLibrary] generated links recovered","count=",tostring(recovered))
+                self:_notify_home_data_changed("section")
+                if user_requested==true then self:toast("已恢复 "..tostring(recovered).." 本已生成书籍关联",2.5) end
+            end
+            return
+        end
+        local path=paths[index]; index=index+1
+        local recovered_ok,book=pcall(self.store.recover_miuread_file,self.store,path,true)
+        if recovered_ok and type(book)=="table" then recovered=recovered+1 end
+        UIManager:scheduleIn(.04,step)
+    end
+    UIManager:scheduleIn(0,step)
+    return true
 end
 
 function Plugin:_home_scan_local(force,user_requested)
@@ -23969,8 +23999,8 @@ function Plugin:on_remote_progress(id,localp,remote,automatic,local_position)
     local remote_ordinal=chapter_ordinal(remote)
     local local_line="本机位置："..string.format("%.1f",tonumber(localp) or 0).."%"
     local remote_line="云端位置："..string.format("%.1f",remotep).."%"
-    if local_ordinal then local_line=local_line.." · 章节 #"..tostring(local_ordinal) end
-    if remote_ordinal then remote_line=remote_line.." · 章节 #"..tostring(remote_ordinal) end
+    if local_ordinal then local_line=local_line.." · 第 "..tostring(local_ordinal).." 章" end
+    if remote_ordinal then remote_line=remote_line.." · 第 "..tostring(remote_ordinal).." 章" end
     local updated=tonumber(remote and remote.updated_at or 0) or 0
     if updated>0 then remote_line=remote_line.." · "..self:_relative_time(updated) end
     local text="检测到阅读位置不同\n\n"..local_line.."\n"..remote_line
@@ -26172,7 +26202,7 @@ function Plugin:_copy_thought_comment(comment,source_text,include_source)
         self:toast("当前设备不支持系统剪贴板",2.5)
         return false
     end
-    local ok,err=pcall(Device.input.setClipboardText,Device.input,text)
+    local ok,err=pcall(Device.input.setClipboardText,text)
     if not ok then
         logger.warn("[MiuRead][ThoughtFavorite] clipboard failed",tostring(err))
         self:toast("复制失败",2)

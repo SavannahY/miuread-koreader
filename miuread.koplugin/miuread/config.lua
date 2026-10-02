@@ -1,6 +1,6 @@
 local C = {
     NAME = "觅阅 · 微信读书助手",
-    VERSION = "5.8.0-beta.25",
+    VERSION = "5.8.0-beta.26",
     SCHEMA = 135,
     MIN_SUPPORTED_SCHEMA = 113,
     PLUGIN_DIR = "miuread.koplugin",
@@ -313,6 +313,12 @@ local C = {
     -- little more permissive because a checkpointed worker has already paid
     -- most of its setup cost.
     HEAVY_DOWNLOAD_START_MIN_KB = 96 * 1024,
+    -- beta.26 continuously samples memory while a heavy worker stage is active.
+    -- Two consecutive low-memory samples are required before checkpointed
+    -- hibernation, avoiding task churn on a single transient dip.
+    HEAVY_DOWNLOAD_RUNNING_MIN_KB = 72 * 1024,
+    HEAVY_DOWNLOAD_RUNNING_LOW_SAMPLES = 2,
+    HEAVY_DOWNLOAD_RUNNING_SAMPLE_SECONDS = 5,
 
     -- beta.4 coalesces repeated typography taps into one KOReader reflow. On a
     -- low-memory/heavy-download overlap, let the downloader checkpoint first

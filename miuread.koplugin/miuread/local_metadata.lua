@@ -4,7 +4,7 @@ local U = require("miuread.util")
 local Json = require("miuread.json")
 
 local LocalMetadata = {}
-local METADATA_EXTRACTOR_VERSION = 5
+local METADATA_EXTRACTOR_VERSION = 6
 
 local function trim(value)
     return tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -67,10 +67,48 @@ local function shell_read(command, limit)
     return data
 end
 
+local function codepoint_to_utf8(code)
+    code=tonumber(code)
+    if not code or code<0 or code>0x10FFFF then return "" end
+    local ok,util=pcall(require,"util")
+    if ok and util and type(util.unicodeCodepointToUtf8)=="function" then
+        return util.unicodeCodepointToUtf8(code) or ""
+    end
+    if code<0x80 then return string.char(code) end
+    if code<0x800 then return string.char(0xC0+math.floor(code/0x40),0x80+code%0x40) end
+    if code<0x10000 then
+        return string.char(0xE0+math.floor(code/0x1000),0x80+math.floor(code/0x40)%0x40,0x80+code%0x40)
+    end
+    return string.char(0xF0+math.floor(code/0x40000),0x80+math.floor(code/0x1000)%0x40,
+        0x80+math.floor(code/0x40)%0x40,0x80+code%0x40)
+end
+
+local function decode_numeric_entities(value)
+    value=tostring(value or "")
+    value=value:gsub("&#(%d+);",function(dec) return codepoint_to_utf8(tonumber(dec)) end)
+    value=value:gsub("&#[xX](%x+);",function(hex) return codepoint_to_utf8(tonumber(hex,16)) end)
+    return value
+end
+
+local function strip_cdata(value)
+    value=tostring(value or "")
+    return value:gsub("^%s*<!%[CDATA%[",""):gsub("%]%]>%s*$","")
+end
+
 local function xml_unescape(value)
-    value = tostring(value or "")
+    value=decode_numeric_entities(strip_cdata(value))
     return value:gsub("&lt;", "<"):gsub("&gt;", ">"):gsub("&quot;", '"')
         :gsub("&apos;", "'"):gsub("&amp;", "&")
+end
+
+-- OPF identity fields are XML text, not HTML. Running title/author through the
+-- HTML cleaner can eat literal angle-bracket text such as "人生<哲学>".
+local function xml_text(value)
+    value=trim(value)
+    if value=="" then return nil end
+    value=tostring(value):gsub("%s+"," ")
+    value=trim(value)
+    return value~="" and value or nil
 end
 
 local function xml_value(source, names)
@@ -139,14 +177,14 @@ local function read_epub_package(filepath, out)
     local opf_path = container:match('full%-path=["\']([^"\']+)["\']') or "OEBPS/package.opf"
     local opf = shell_read("unzip -p " .. quoted .. " " .. U.shell_quote(opf_path) .. " 2>/dev/null")
     if not opf or opf == "" then return false end
-    local title = plain_text(xml_value(opf, {"title"}))
-    local author = authors_text(plain_text(xml_value(opf, {"creator", "author"})))
+    local title = xml_text(xml_value(opf, {"title"}))
+    local author = authors_text(xml_text(xml_value(opf, {"creator", "author"})))
     local description = plain_text(xml_value(opf, {"description", "summary"}))
-    local subject = plain_text(xml_value(opf, {"subject"}))
-    local publisher = plain_text(xml_value(opf, {"publisher"}))
-    local language = plain_text(xml_value(opf, {"language"}))
+    local subject = xml_text(xml_value(opf, {"subject"}))
+    local publisher = xml_text(xml_value(opf, {"publisher"}))
+    local language = xml_text(xml_value(opf, {"language"}))
     local isbn = find_isbn(xml_value(opf, {"identifier", "isbn"}))
-    local source = plain_text(xml_value(opf, {"source"}))
+    local source = xml_text(xml_value(opf, {"source"}))
     local package_info = {
         title = title, author = author,
         is_miuread = type(source) == "string" and source:find("miuread://book/", 1, true) == 1,
@@ -513,8 +551,13 @@ function LocalMetadata.merge(book, metadata)
             changed = true
         end
     end
-    set("title", metadata.title)
-    set("author", metadata.author)
+    local function set_identity(key,value)
+        if value==nil or value=="" then return end
+        if book.in_account_shelf==true and book[key]~=nil and book[key]~="" then return end
+        set(key,value)
+    end
+    set_identity("title", metadata.title)
+    set_identity("author", metadata.author)
     set("series", metadata.series)
     set("language", metadata.language)
     set("description", metadata.description)

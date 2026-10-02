@@ -1999,6 +1999,28 @@ end
 -- Reader-session recovery must be stricter than general library relinking.
 -- Only an EPUB carrying MiuRead's embedded book id is allowed to become a
 -- WeRead session; a same-title ordinary EPUB must stay a local book.
+function Store:orphan_miuread_files(limit)
+    local root=self:books_root()
+    limit=math.max(1,math.min(256,tonumber(limit) or 64))
+    local out={}
+    local ok,iter,state,var=pcall(lfs.dir,root)
+    if not ok or not iter then return out end
+    while #out<limit do
+        local name=iter(state,var); var=name
+        if not name then break end
+        if name~="." and name~=".." and tostring(name):lower():match("%.epub$") then
+            local path=root.."/"..name
+            if lfs.attributes(path,"mode")=="file" then
+                local book=self:file_record_fast(path,false)
+                if not book then out[#out+1]=path end
+            end
+        end
+    end
+    pcall(function() if state and state.close then state:close() end end)
+    table.sort(out)
+    return out
+end
+
 function Store:recover_miuread_file(path,relink)
     local book,record,kind=self:file_record_fast(path,relink)
     if book then return book,record,kind,"record" end

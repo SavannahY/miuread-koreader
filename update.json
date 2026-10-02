@@ -1,17 +1,17 @@
 {
-  "version": "5.8.0-beta.22",
-  "name": "觅阅 · 微信读书助手 5.8.0-beta.22 内测版",
+  "version": "5.8.0-beta.26",
+  "name": "觅阅 · 微信读书助手 5.8.0-beta.26 内测版",
   "channel": "beta",
   "package_type": "full",
-  "package_url": "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.8.0-beta.22/miuread-v5.8.0-beta.22-full.zip",
+  "package_url": "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.8.0-beta.26/miuread-v5.8.0-beta.26-full.zip",
   "package_urls": [
-    "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.8.0-beta.22/miuread-v5.8.0-beta.22-full.zip",
-    "https://ghfast.top/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.8.0-beta.22/miuread-v5.8.0-beta.22-full.zip",
-    "https://gh-proxy.com/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.8.0-beta.22/miuread-v5.8.0-beta.22-full.zip",
-    "https://ghproxy.net/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.8.0-beta.22/miuread-v5.8.0-beta.22-full.zip"
+    "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.8.0-beta.26/miuread-v5.8.0-beta.26-full.zip",
+    "https://ghfast.top/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.8.0-beta.26/miuread-v5.8.0-beta.26-full.zip",
+    "https://gh-proxy.com/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.8.0-beta.26/miuread-v5.8.0-beta.26-full.zip",
+    "https://ghproxy.net/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.8.0-beta.26/miuread-v5.8.0-beta.26-full.zip"
   ],
-  "size": 1966729,
-  "sha256": "837bd9512794825441a4d3865c97151f7cf63e9744d3a0781115bca09b17f43e",
-  "summary": "正式纳入微信读书下载连接复用优化，减少整本下载过程中重复 TCP/TLS 握手，同时保持非下载网络行为、同步精度与后台稳定性不变。",
-  "notes": "合入 PR #73 下载连接复用：仅下载目录、阅读页上下文和章节正文分片显式启用 keepalive=true；登录、书架、阅读进度、阅读时长、批注与评论点赞继续使用原有网络行为。连接仅在响应可明确界定、对端未要求 close 且交换完整时回池，空闲 25 秒过期、单连接最多复用 64 次；网络恢复和限流冷却前、下载完成/取消/异常退出后主动清空连接池。复用连接失效时仅 GET/HEAD 可在未收到响应字节时透明重建一次，POST 不在连接池层重放。流式文件仍走独立连接，Config.HTTP_KEEPALIVE=false 可完整回退。Schema 保持 135，beta.21 在线点赞、beta.20 书架恢复与 100 本提醒、beta.19 阅读时长/SAFE pending/精确进度等全部保留。"
+  "size": 1991902,
+  "sha256": "b013109b07048159ac75a525e45e4c0aa4f6347ade9cb1bf035e4adefcf346c0",
+  "summary": "稳定性收口：修复评论/书摘剪贴板 table、1%→100% 进度歧义和本地元数据污染，支持刷新恢复丢失的已生成关联，并加强长篇精确定位与低内存下载保护。",
+  "notes": "beta.26 基于 beta.25。#111 修正 setClipboardText 普通函数调用；#115 明确区分微信 0–100 progress 与本地 0–1 ratio，并对非最终有效章节的 100% 上报 fail-closed；#107 增强 OPF numeric entity/CDATA/XML identity 解析并在主页手动刷新时增量恢复 orphan MiuRead EPUB 关联；#114 保持 chapter UID rescue 后必须 chapter_uid+co 精确验证，并在多设备冲突中显示章节与更新时间；#116 重型下载连续两次低内存采样后安全 checkpoint+hibernate。Schema 保持 135。"
 }

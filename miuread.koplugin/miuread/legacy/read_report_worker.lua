@@ -75,6 +75,14 @@ local function normalize_progress_ratio(value)
     return value
 end
 
+-- WeRead book.progress / remote_progress are 0-100 percents. Exactly 1 is 1%,
+-- not ratio 1.0. Keep this conversion separate from ratio-normalization.
+local function percent_to_ratio(value)
+    value=tonumber(value)
+    if not value then return nil end
+    return math.max(0,math.min(1,value/100))
+end
+
 local function native_progress_percent(value)
     local ratio = normalize_progress_ratio(value) or 0
     -- The Web Reader uses parseInt(100 * ratio), i.e. floor for the valid
@@ -233,7 +241,7 @@ local function select_context_chapter(book)
 
     -- Ratio fallback uses only chapters with trustworthy positive length. It
     -- must never choose a zero-length structural/random chapter just to report.
-    local ratio = normalize_progress_ratio(book.progress) or 0
+    local ratio = percent_to_ratio(book.progress) or 0
     local total = 0
     for _, chapter in ipairs(chapters) do total = total + trusted_words(book, chapter) end
     if total > 0 then
@@ -383,7 +391,7 @@ end
 local function estimate_position(book, progress_ratio)
     local chapters = type(book.chapters) == "table" and book.chapters or {}
     local ratio = normalize_progress_ratio(progress_ratio)
-        or normalize_progress_ratio(book.progress)
+        or percent_to_ratio(book.progress)
         or 0
 
     local native, native_error = native_local_position(book, ratio)
@@ -401,7 +409,7 @@ local function estimate_position(book, progress_ratio)
                 chapter_uid = book.remote_chapter_uid or book.chapter_uid or 0,
                 chapter_idx = tonumber(book.remote_chapter_idx or book.chapter_idx) or 0,
                 chapter_offset = tonumber(book.remote_chapter_offset or book.chapter_offset) or 0,
-                progress = native_progress_percent(book.remote_progress or book.progress),
+                progress = math.floor((percent_to_ratio(book.remote_progress or book.progress) or 0) * 100),
                 source = "remote_fallback",
             }
         end
@@ -508,6 +516,28 @@ local function refresh_remote_anchor(client, book_id, book)
     return true
 end
 
+local function last_readable_chapter_uid(book)
+    local chapters=type(book and book.chapters)=="table" and book.chapters or {}
+    for index=#chapters,1,-1 do
+        local chapter=chapters[index]
+        if not Content.is_structural_chapter(chapter) then
+            local uid=chapter_uid(chapter)
+            if tostring(uid or "")~="" then return tostring(uid) end
+        end
+    end
+    return nil
+end
+
+local function validate_terminal_progress(book,position)
+    if type(position)~="table" or tonumber(position.progress or 0)<100 then return true end
+    local last_uid=last_readable_chapter_uid(book)
+    if not last_uid then return false,"refusing unverified 100% progress without a readable final chapter" end
+    if tostring(position.chapter_uid or "")~=last_uid then
+        return false,"refusing 100% progress outside final readable chapter"
+    end
+    return true
+end
+
 local function build_payload(book_id, elapsed_seconds, book, progress_ratio, time_only, position_override)
     local position, position_error
     if time_only ~= true then
@@ -516,6 +546,8 @@ local function build_payload(book_id, elapsed_seconds, book, progress_ratio, tim
             position, position_error = estimate_position(book, progress_ratio)
             if not position then return nil, position_error end
         end
+        local terminal_ok,terminal_error=validate_terminal_progress(book,position)
+        if not terminal_ok then return nil,terminal_error end
     end
     local payload=WeRead.make_read_payload{
         book_id = book_id,
