@@ -262,8 +262,7 @@ local function positions_match(submitted,remote,threshold)
         local a,b=tonumber(submitted.offset or submitted.chapter_offset),tonumber(remote.offset or remote.chapter_offset)
         local chapter_words=tonumber(submitted.chapter_word_count) or 0
         if a~=nil and b~=nil then
-            local tolerance=submitted.native_offset==true and 32
-                or math.max(12,math.floor(chapter_words*0.005))
+            local tolerance=submitted.native_offset==true and 16 or 12
             if math.abs(a-b)<=tolerance then return true,"chapter_offset_match" end
             return false,"chapter_offset_mismatch"
         end
@@ -1636,6 +1635,155 @@ function Sync:_position_for_report(ratio, precise)
     return fallback
 end
 
+local function valid_jump_xpointer(document, xp)
+    if type(xp) ~= "string" or xp == "" then return false end
+    if document and type(document.isXPointerInDocument) == "function" then
+        local ok, valid = pcall(document.isXPointerInDocument, document, xp)
+        if ok and valid == false then return false end
+    end
+    return true
+end
+
+local function toc_jump_xpointer(document, item)
+    if type(item) ~= "table" then return nil end
+    local xp = item.xpointer or item.xp
+    if valid_jump_xpointer(document, xp) then return xp end
+    local page = tonumber(item.page or item.pageno)
+    if page and page >= 1 and document and type(document.getPageXPointer) == "function" then
+        local ok, value = pcall(document.getPageXPointer, document, math.floor(page + .5))
+        if ok and valid_jump_xpointer(document, value) then return value end
+    end
+    return nil
+end
+
+function Sync:jump_xpointer(xp)
+    local ui = self.host and self.host.ui or nil
+    local document = ui and ui.document or nil
+    if not ui or not document or not valid_jump_xpointer(document, xp) then return false end
+    if type(ui.handleEvent) ~= "function" then return false end
+    logger.info("[MiuRead][ProgressJump]", "method=xpointer")
+    local ok = pcall(function() ui:handleEvent(Event:new("GotoXPointer", xp, xp)) end)
+    return ok
+end
+
+function Sync:jump_page(page)
+    page = math.floor(tonumber(page) or 0)
+    local ui = self.host and self.host.ui or nil
+    if not ui or not ui.document or page < 1 or type(ui.handleEvent) ~= "function" then return false end
+    logger.info("[MiuRead][ProgressJump]", "method=page", "page=", tostring(page))
+    local ok = pcall(function() ui:handleEvent(Event:new("GotoPage", page)) end)
+    return ok
+end
+
+-- beta.24 safety net for cloud -> local jumps. The normal beta.23 path remains
+-- authoritative and runs first. This helper is called only after precise
+-- post-jump verification proves that GotoPercent landed in a different chapter.
+-- It never marks a position verified: the caller must resolve chapter/co again.
+function Sync:chapter_anchor_rescue(remote)
+    remote = type(remote) == "table" and remote or {}
+    local record = self:record()
+    if not record then return false, "chapter_anchor_record_missing" end
+    local row = type(record.record) == "table" and record.record or {}
+    local mode = self:_record_mode(record)
+    if mode ~= "full" or row.partial_range == true then
+        return false, "chapter_anchor_mode_unsupported"
+    end
+
+    local remote_uid = tostring(remote.chapter_uid or remote.chapterUid or "")
+    if remote_uid == "" then return false, "chapter_anchor_uid_missing" end
+    local map = type(row.chapter_map) == "table" and row.chapter_map or {}
+    if #map == 0 then return false, "chapter_anchor_map_missing" end
+
+    local map_index, map_row
+    for index, chapter in ipairs(map) do
+        if type(chapter) == "table" and chapter.structural ~= true
+            and tostring(chapter_uid(chapter) or "") == remote_uid then
+            map_index, map_row = index, chapter
+            break
+        end
+    end
+    -- UID is the identity. Never guess from chapter_idx when the UID is absent
+    -- or no longer exists in the local EPUB: catalog edits can shift ordinals.
+    if not map_index then return false, "chapter_anchor_uid_not_found" end
+
+    local ui = self.host and self.host.ui or nil
+    local document = ui and ui.document or nil
+    local toc = ui and ui.toc or nil
+    if not document or not toc then return false, "chapter_anchor_toc_unavailable" end
+    if type(toc.fillToc) == "function" then pcall(toc.fillToc, toc) end
+    local items = type(toc.toc) == "table" and toc.toc or nil
+    if not items or #items == 0 then return false, "chapter_anchor_toc_missing" end
+    if map_index < 1 or map_index > #items then return false, "chapter_anchor_toc_out_of_bounds" end
+
+    local item = items[map_index]
+    if type(item) ~= "table" then return false, "chapter_anchor_toc_item_missing" end
+    local start_xp = toc_jump_xpointer(document, item)
+    local page_start = tonumber(item.page or item.pageno)
+    if page_start then page_start = math.floor(page_start + .5) end
+
+    local ratio = tonumber(remote.chapter_ratio)
+    if ratio == nil then
+        local source_offset = tonumber(remote.source_word_offset)
+        local words = math.max(0, tonumber(map_row.word_count or map_row.wordCount or 0) or 0)
+        if source_offset ~= nil and words > 0 then ratio = source_offset / words end
+    end
+    if ratio ~= nil then ratio = U.clamp(ratio, 0, 1) end
+
+    local next_item = items[map_index + 1]
+    local page_end = type(next_item) == "table" and tonumber(next_item.page or next_item.pageno) or nil
+    if page_end then page_end = math.floor(page_end + .5) end
+    local is_last = map_index == #map
+    if is_last and (not page_end or not page_start or page_end <= page_start)
+        and type(document.getPageCount) == "function" then
+        local ok_count, count = pcall(document.getPageCount, document)
+        count = ok_count and tonumber(count) or nil
+        if count and count >= 1 then page_end = math.floor(count) + 1 end
+    end
+
+    local target_page
+    -- For non-final chapters, page interpolation is allowed only when the next
+    -- chapter exposes a real start page. If that boundary is missing we prefer
+    -- the chapter-start XPointer instead of pretending this chapter reaches EOF.
+    if ratio ~= nil and page_start and page_start >= 1 and page_end and page_end > page_start then
+        local span = page_end - page_start
+        target_page = page_start + math.floor(ratio * span)
+        target_page = math.max(page_start, math.min(page_end - 1, target_page))
+    end
+
+    local method
+    if target_page and self:jump_page(target_page) then
+        method = "chapter_page_ratio"
+    elseif start_xp and self:jump_xpointer(start_xp) then
+        method = "chapter_start_xpointer"
+    elseif page_start and self:jump_page(page_start) then
+        method = "chapter_start_page"
+    else
+        return false, "chapter_anchor_jump_unavailable"
+    end
+
+    local info = {
+        chapter_uid = remote_uid,
+        map_index = map_index,
+        toc_index = map_index,
+        ratio = ratio,
+        page_start = page_start,
+        page_end = page_end,
+        target_page = target_page,
+        xpointer = start_xp,
+        method = method,
+    }
+    logger.info("[MiuRead][ChapterAnchor]",
+        "book=", tostring(record.book and record.book.book_id or ""),
+        "chapter=", remote_uid,
+        "map_index=", tostring(map_index),
+        "page_start=", tostring(page_start or "-"),
+        "page_end=", tostring(page_end or "-"),
+        "ratio=", ratio ~= nil and string.format("%.6f", ratio) or "-",
+        "target_page=", tostring(target_page or "-"),
+        "method=", method)
+    return true, nil, info
+end
+
 function Sync:jump_remote(remote)
     remote = remote or {}
     local record = self:record()
@@ -2532,7 +2680,7 @@ function Sync:upload(elapsed, callback, options)
     options = options or {}
     local record = type(options.record_override)=="table" and U.copy(options.record_override) or self:record()
     if not record then if callback then callback(false, "未识别到 MiuRead 生成的当前书籍") end; return false end
-    if self.progress_hold and not options.progress_only then
+    if self.progress_hold and not options.progress_only and options.reading_time_retry~=true then
         if callback then callback(false, "阅读位置尚未确认") end
         return false
     end
@@ -2623,6 +2771,9 @@ function Sync:upload(elapsed, callback, options)
             wr_wrpa = auth.wr_wrpa or "",
             allow_renewal = false,
             force_context = options.force_context == true,
+            time_only = options.time_only == true,
+            report_mode = options.report_mode,
+            cloud_anchor = type(options.cloud_anchor)=="table" and U.copy(options.cloud_anchor) or nil,
         }
     end, function(result)
         self.busy = false
@@ -2863,6 +3014,84 @@ function Sync:upload(elapsed, callback, options)
         return false
     end
     return true
+end
+
+function Sync:retry_safe_reading_time(book_id,record_override,position_override,callback)
+    callback=type(callback)=="function" and callback or function() end
+    book_id=tostring(book_id or "")
+    local session=book_id~="" and (self.store:session(book_id) or {}) or {}
+    local seconds=session.pending_report_safe==true
+        and math.max(0,math.floor(tonumber(session.pending_report_seconds) or 0)) or 0
+    if book_id=="" or seconds<=0 then callback(true,"没有可安全重试的阅读时间","empty"); return true end
+    if type(record_override)~="table" or not record_override.book
+        or tostring(record_override.book.book_id or record_override.book.bookId or "")~=book_id then
+        callback(false,"缺少本地书籍同步上下文","context"); return false
+    end
+    local position=type(position_override)=="table" and U.copy(position_override) or nil
+    if not position or position.safe~=true or tonumber(position.progress)==nil
+        or tostring(position.chapter_uid or position.chapterUid or "")=="" then
+        callback(false,"缺少安全的位置锚点，不能重传阅读时间","context"); return false
+    end
+    local anchor=self:cloud_anchor(book_id)
+    if not anchor then
+        callback(false,"缺少云端位置锚点，不能保证重传只增加阅读时间","context")
+        return false
+    end
+    local core_hash=self:_core_map_hash(record_override)
+    local started=self:upload(seconds,function(ok,result,_position,value)
+        value=type(value)=="table" and value or {}
+        local meta=type(value.meta)=="table" and value.meta or {}
+        local kind=tostring(value.error_kind or "")
+        if ok==true then
+            self:_save_safe_pending_state(book_id,0,core_hash)
+            self.store:save_session(book_id,{
+                report_state="ok",last_error=false,last_error_kind=false,
+                last_unconfirmed=false,last_unconfirmed_at=false,
+                last_report_reason="manual_safe_retry",last_upload=os.time(),last_elapsed=seconds,
+            })
+            logger.info("[MiuRead][ReadingTimeRetry] accepted","book=",book_id,"seconds=",tostring(seconds))
+            callback(true,"微信读书已确认接收","accepted")
+            return
+        end
+
+        local dispatch_unknown=value.uncertain==true or kind=="unconfirmed"
+            or (kind=="transport" and meta.request_dispatched==true)
+        if dispatch_unknown then
+            -- Once a request may have reached WeRead, those seconds are no longer
+            -- provably unsent. Remove them from the replay pool so a second click
+            -- can never double-count reading time.
+            self:_save_safe_pending_state(book_id,0,core_hash)
+            self.store:save_session(book_id,{
+                report_state="unconfirmed",
+                last_unconfirmed=tostring(result or value.response_summary or "请求已发出但结果不明确"),
+                last_unconfirmed_at=os.time(),
+                last_report_reason="manual_safe_retry_unconfirmed",
+            })
+            logger.warn("[MiuRead][ReadingTimeRetry] dispatch unconfirmed; replay disabled",
+                "book=",book_id,"seconds=",tostring(seconds),"kind=",kind)
+            callback(false,"请求可能已到达微信读书；为避免重复计时，已停止再次重传","unconfirmed")
+            return
+        end
+
+        -- Explicit server/auth/context rejection means the interval was not
+        -- accepted. Keep the SAFE carry so a later authenticated click can retry.
+        logger.warn("[MiuRead][ReadingTimeRetry] explicit failure retained",
+            "book=",book_id,"seconds=",tostring(seconds),"kind=",kind,
+            "error=",tostring(result or value.error or "-"))
+        callback(false,tostring(result or value.error or "阅读时间同步失败"),kind~="" and kind or "failed")
+    end,{
+        silent=true,
+        reading_time_retry=true,
+        time_only=true,
+        report_mode="reading_time_compat",
+        cloud_anchor=anchor,
+        position_override=position,
+        record_override=record_override,
+        allow_same_book_generation_change=true,
+        allow_book_switch_result=true,
+    })
+    if not started then callback(false,"阅读时间同步任务正在运行","busy") end
+    return started
 end
 
 function Sync:begin_progress_write(reason, callback)

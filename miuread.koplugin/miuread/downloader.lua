@@ -731,7 +731,7 @@ function Downloader:catalog(id, request_options)
     -- chapterInfos does not reliably expose the book format. Use the reader
     -- page context when available; on failure keep the source titles unchanged.
     local book_format
-    local ok_state, state = pcall(self.reader.state, self.reader, id, request_options.keepalive)
+    local ok_state, state = pcall(self.reader.chapter_state, self.reader, id, nil, request_options.keepalive)
     if ok_state and type(state) == "table" and type(state.book) == "table" then
         book_format = tostring(state.book.format or ""):lower()
     else

@@ -16,6 +16,8 @@ MiuRead（觅阅 · 微信读书助手）是面向 KOReader 的非官方微信�
 
 完整版本记录见 [`CHANGELOG.md`](CHANGELOG.md)。
 
+当前 beta 开发基线：`5.8.0-beta.25`。本版本重点收口同步失败重试闭环，并保持 `chapter_uid + co` 为精确进度最终验证依据。
+
 ## Installation
 
 1. 在 GitHub Releases 下载需要的版本。

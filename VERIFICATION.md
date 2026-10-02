@@ -1,3 +1,30 @@
+# 5.8.0-beta.25 verification
+
+## beta.25 完成标准
+
+- 版本元数据必须统一为 `5.8.0-beta.25`，Schema 继续保持 135。
+- 主页同步总状态只允许显示“已同步 / 同步中 N / 同步失败 N / 同步检查中 / 未登录”，不得把内部 pending/confirmation 状态作为新的用户状态。
+- “同步失败 N”必须对应真实可枚举工作；阅读进度、SAFE 阅读时间和批注均需有可点击处理入口，“全部重新同步”必须调用统一重试管线。
+- 阅读时间只有 `pending_report_safe=true` 且秒数大于 0 时才进入可重试池；请求可能已发出后必须清除 SAFE replay，禁止重复计时。
+- 进度恢复必须先验证云端，再只对明确未提交/明确不一致的精确快照执行写入。
+- 当本地和云端同时存在 `chapter_uid + co` 时，最终成功判定不得由 percent 近似覆盖；源码中不得存在 `mapped_percent_equivalent` 或 `equivalent_percent_tolerance`。
+- beta.24 chapter-UID rescue 可继续用于导航，但 rescue 本身不得标记 verified；最终仍需精确坐标验证。
+- beta.24 的性能、下载连接复用、reader context 复用、Store、扩展中心、书架与评论回归必须继续通过。
+
+## 自动验证
+
+```bash
+python3 tools/verify_beta25.py
+```
+
+当前构建结果：`checks=319 failures=0`。该 verifier 同时运行 136 个 shipped Lua 文件的语法检查和可移植动态回归测试。
+
+补充：`tools/test_reader_context.lua` 需要 KOReader/LuaJIT 提供的 `bit` 模块；当前构建容器没有该模块，因此该专项测试无法在本容器启动。失败发生在模块加载阶段（`module 'bit' not found`），不是测试断言失败。
+
+Release ZIP 必须只有一个 `miuread.koplugin/` 根目录；源码 ZIP 不包含 `.git`。
+
+---
+
 # 5.8.0-beta.22 verification
 
 ## 完成标准

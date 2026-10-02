@@ -964,7 +964,7 @@ function Reader:chapter_state(book_id,chapter_uid,keepalive)
     if not usable then
         self._reader_context={
             book_id=tostring(book_id),
-            context=book_scoped_context(self:state(book_id,chapter_uid,keepalive)),
+            context=book_scoped_context(self:state(book_id,nil,keepalive)),
             fetched_at=os.time(),
         }
         cached=self._reader_context

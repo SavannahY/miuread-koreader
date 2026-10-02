@@ -1,5 +1,6 @@
 local U = require("miuread.util")
 local PosMap = require("miuread.annotations.posmap")
+local logger = require("logger")
 local WRCo = require("miuread.wr_co")
 local lfs = require("libs/libkoreader-lfs")
 
@@ -192,13 +193,30 @@ local function fetch_coord_html(reader, record, anchor, options)
 
     local ok, downloaded, _, _, state = pcall(reader.chapter, reader,
         book_arg, chapter, "epub", {images=false})
-    if not ok then return nil, nil, "source_network_fetch_failed:" .. tostring(downloaded) end
+    if not ok then
+        local detail=tostring(downloaded or "")
+        local access_denied=type(reader.is_access_denied_error)=="function"
+            and reader.is_access_denied_error(detail)==true or false
+        logger.warn("[MiuRead][ProgressSourceDiagnostic]",
+            "stage=network_fetch", "book=", book_arg.bookId, "chapter=", uid,
+            "access_denied=", tostring(access_denied),
+            "error=", U.first_line(detail,160))
+        return nil, nil, "source_network_fetch_failed:" .. detail
+    end
 
     local coord_html = type(state) == "table" and tostring(state.coord_html or "") or ""
     if coord_html == "" then coord_html = tostring(downloaded or "") end
-    if coord_html == "" then return nil, nil, "coord_html_missing" end
+    if coord_html == "" then
+        logger.warn("[MiuRead][ProgressSourceDiagnostic]",
+            "stage=network_fetch", "book=", book_arg.bookId, "chapter=", uid,
+            "empty_source=true")
+        return nil, nil, "coord_html_missing"
+    end
     if #coord_html > MAX_SOURCE_BYTES then return nil, nil, "coord_html_too_large" end
 
+    logger.info("[MiuRead][ProgressSourceDiagnostic]",
+        "stage=network_fetch", "book=", book_arg.bookId, "chapter=", uid,
+        "source_bytes=", tostring(#coord_html), "source_kind=network_refresh")
     local write_path = paths[1]
     if write_path then pcall(U.atomic_write, write_path, coord_html, true) end
     return coord_html, false, nil, {kind="network_refresh", path=write_path, version=version}
@@ -308,7 +326,24 @@ local function locate_single(reader, record, anchor, options)
     end
 
     local located, locate_error = locate_anchor(map, anchor)
-    if not located then return nil, locate_error end
+    if not located then
+        logger.warn("[MiuRead][ProgressSourceDiagnostic]",
+            "stage=anchor_locate",
+            "book=", tostring(type(record.book)=="table" and (record.book.book_id or record.book.bookId) or ""),
+            "chapter=", tostring(anchor.chapter_uid or ""),
+            "error=", tostring(locate_error or "not_found"),
+            "cache_kind=", tostring(cache_meta and cache_meta.kind or "unknown"),
+            "cache_hit=", tostring(cache_hit==true),
+            "source_bytes=", tostring(#coord_html),
+            "anchor_chars=", tostring(anchor.anchor_chars or 0),
+            "anchor_kind=", tostring(anchor.anchor_kind or ""),
+            "anchor_cross_chapter=", tostring(anchor.anchor_cross_chapter==true),
+            "anchor_title_nearby=", tostring(anchor.anchor_contains_chapter_title==true),
+            "anchor_start_toc=", tostring(anchor.anchor_start_toc_index or "-"),
+            "anchor_end_toc=", tostring(anchor.anchor_end_toc_index or "-"),
+            "network_allowed=", tostring(options.cache_only~=true))
+        return nil, locate_error
+    end
 
     local within = U.clamp(located.norm_before / located.norm_total, 0, 1)
     -- Keep the old word-space candidate only for progress/fallback diagnostics.
