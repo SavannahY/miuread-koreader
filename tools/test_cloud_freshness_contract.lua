@@ -1,0 +1,7 @@
+local main=assert(io.open("miuread.koplugin/main.lua","rb")):read("*a")
+assert(main:find("prior.updated_at or session.progress_upload_verified_at or session.progress_decided_at",1,true),"technical snapshot must not use captured_at as freshness")
+assert(not main:find("prior.updated_at or prior.captured_at or session.progress_upload_verified_at",1,true),"captured_at freshness fallback removed")
+assert(main:find("stale cloud observation ignored",1,true),"stale remote diagnostic exists")
+assert(main:find("prefer_nonstale_remote",1,true),"remote stale guard wired")
+assert(main:find("local_pos and local_pos.updated_at or 0",1,true),"shelf resolver uses event freshness only")
+print("cloud freshness contract: PASS")

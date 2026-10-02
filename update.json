@@ -1,0 +1,17 @@
+{
+  "version": "5.9.0-beta.2",
+  "name": "觅阅 · 微信读书助手 5.9.0-beta.2 内测版",
+  "channel": "beta",
+  "package_type": "full",
+  "package_url": "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.2/miuread-v5.9.0-beta.2-full.zip",
+  "package_urls": [
+    "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.2/miuread-v5.9.0-beta.2-full.zip",
+    "https://ghfast.top/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.2/miuread-v5.9.0-beta.2-full.zip",
+    "https://gh-proxy.com/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.2/miuread-v5.9.0-beta.2-full.zip",
+    "https://ghproxy.net/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.2/miuread-v5.9.0-beta.2-full.zip"
+  ],
+  "size": 1988374,
+  "sha256": "b32488ddd9e990424d0e89606133d31c7a6929d5bf9bf33beaf836f05aabc800",
+  "summary": "5.9.0-beta.2 稳定 Cloud Mirror：技术性本地快照不再伪造 freshness，明确更旧的晚到云端响应不会覆盖已知更新位置；Release 发布前新增 5.9 回归与 CHANGELOG 结构校验。",
+  "notes": "5.9.0-beta.2 在 beta.1 的自动 latest-wins 基础上修正 freshness 语义：打开/读取本地页面不会因为 captured_at 被当成新的阅读事件；对带明确更旧服务器时间的乱序云端响应进行保守拒绝，避免网络抖动造成位置倒退。Schema 继续为 136，保留 2.5 秒本机 fallback、晚到云端防突跳、8 秒撤回、cloudOrder 默认排序与 chapter_uid+co 精确验收。Beta Release 现在会在打包前运行 beta.2 verifier，并对错误的 CHANGELOG 一级版本标题给出明确修复提示。"
+}
