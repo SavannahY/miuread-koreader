@@ -270,6 +270,12 @@ jobs:
           find miuread.koplugin -type f -name '*.lua' -print0 | xargs -0 -n1 luac5.1 -p
           lua5.1 tools/test_position_resolution.lua
           lua5.1 tools/test_position_state_hotfix.lua
+          lua5.1 tools/test_open_sync_contract.lua
+          lua5.1 tools/test_beta5_sync_contract.lua
+          lua5.1 tools/test_cloud_mirror_contract.lua
+          lua5.1 tools/test_long_book_anchor.lua
+          lua5.1 tools/test_terminal_progress_guard.lua
+          lua5.1 tools/test_finished_resolution.lua
           lua5.1 tools/test_store_repair.lua
           lua5.1 tools/test_cloud_freshness_contract.lua
           luajit tools/test_translation.lua
@@ -277,7 +283,7 @@ jobs:
           luajit tools/test_translation_fetch.lua
           luajit tools/test_internal_links.lua
           python3 tools/test_extension_center_ux.py
-          python3 tools/verify_590_beta4.py
+          python3 tools/verify_590_beta5.py
 
       - name: Build beta full package and manifest
         shell: bash

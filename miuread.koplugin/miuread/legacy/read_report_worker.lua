@@ -299,7 +299,9 @@ local function refresh_context(client, book_id, book, force)
         local remote_offset = tonumber(remote.chapterOffset or remote.chapterPos or remote.offset)
         local remote_progress = tonumber(remote.progress)
         if remote_progress ~= nil or remote_uid ~= nil then
-            book.remote_progress = remote_progress or tonumber(book.progress) or 0
+            -- beta.5: server percent is diagnostic only. Never promote it to
+            -- a canonical progress fallback for reporting.
+            book.remote_raw_progress = remote_progress
             book.remote_chapter_uid = remote_uid or book.chapter_uid
             book.remote_chapter_idx = remote_idx or tonumber(book.chapter_idx) or 0
             book.remote_chapter_offset = remote_offset or tonumber(book.chapter_offset) or 0
@@ -404,15 +406,9 @@ local function estimate_position(book, progress_ratio)
     if book.source_is_standalone == true then
         local mapped, map_error = standalone_position(book, ratio)
         if mapped then return mapped end
-        if book.remote_progress_loaded == true then
-            return {
-                chapter_uid = book.remote_chapter_uid or book.chapter_uid or 0,
-                chapter_idx = tonumber(book.remote_chapter_idx or book.chapter_idx) or 0,
-                chapter_offset = tonumber(book.remote_chapter_offset or book.chapter_offset) or 0,
-                progress = math.floor((percent_to_ratio(book.remote_progress or book.progress) or 0) * 100),
-                source = "remote_fallback",
-            }
-        end
+        -- Raw server progress cannot safely synthesize a canonical standalone
+        -- position. If source mapping is unavailable, let the best-effort time
+        -- report fail/drop instead of replaying a potentially false 100%.
         return nil, map_error
     end
 
@@ -485,8 +481,10 @@ local function normalize_cloud_anchor(anchor, book)
         or book.remote_chapter_idx or book.chapter_idx)
     local offset = tonumber(anchor.chapter_offset or anchor.offset or anchor.chapterOffset
         or book.remote_chapter_offset)
-    local progress = tonumber(anchor.protocol_progress or anchor.raw_progress or anchor.raw_percent
-        or anchor.progress or book.remote_progress)
+    -- beta.5: reading-time context consumes canonical progress only. Raw server
+    -- percent is diagnostic and may legitimately disagree with chapter/co.
+    local progress = tonumber(anchor.canonical_progress or anchor.calculated_percent or anchor.progress
+        or anchor.protocol_progress or book.canonical_progress)
     if tostring(uid or "") == "" or offset == nil or progress == nil then return nil end
     return {
         chapter_uid = uid,
@@ -508,7 +506,7 @@ local function refresh_remote_anchor(client, book_id, book)
     local offset = tonumber(remote.chapterOffset or remote.chapterPos or remote.offset)
     local progress = tonumber(remote.progress)
     if tostring(uid or "") == "" or offset == nil or progress == nil then return false end
-    book.remote_progress = progress
+    book.remote_raw_progress = progress
     book.remote_chapter_uid = uid
     book.remote_chapter_idx = idx or tonumber(book.chapter_idx) or 0
     book.remote_chapter_offset = offset
@@ -624,7 +622,7 @@ local BOOK_PATCH_KEYS = {
     "local_native_chapter_offset", "local_chapter_offset_basis",
     "source_is_standalone", "source_chapter_uid", "source_chapter_index",
     "source_chapter_word_count", "source_chapter_title",
-    "catalog_complete", "remote_progress_loaded", "remote_progress",
+    "catalog_complete", "remote_progress_loaded", "remote_raw_progress",
     "remote_chapter_uid", "remote_chapter_idx", "remote_chapter_offset",
     "app_id", "read_context_updated_at", "read_context_ready", "core_map_hash",
 }

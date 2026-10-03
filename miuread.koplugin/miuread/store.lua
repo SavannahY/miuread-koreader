@@ -504,6 +504,34 @@ function Store:new(options)
             logger.warn("[MiuRead][StoreRepair] position snapshots compacted at startup","sessions=",tostring(count))
         end
     end
+    -- beta.5: reading-time debt is no longer durable. Clear only historical
+    -- time-report retry/failure fields; progress/annotation recovery is untouched.
+    do
+        local sessions=o.db:readSetting("sessions",{}) or {}
+        local cleaned=0
+        for _,session in pairs(sessions) do
+            if type(session)=="table" then
+                local changed=false
+                if tonumber(session.pending_report_seconds or 0)~=0 then session.pending_report_seconds=0; changed=true end
+                if session.pending_report_safe==true then session.pending_report_safe=false; changed=true end
+                local rs=tostring(session.report_state or "")
+                if rs=="time_only_failed" or rs=="best_effort_retry" or rs=="dropped" then
+                    session.report_state=false
+                    session.last_error=false
+                    session.last_error_kind=false
+                    session.consecutive_failures=0
+                    changed=true
+                end
+                if changed then cleaned=cleaned+1 end
+            end
+        end
+        if cleaned>0 then
+            o.db:saveSetting("sessions",sessions)
+            startup_dirty=true
+            logger.info("[MiuRead][StoreRepair] reading-time retry state cleared at startup","sessions=",tostring(cleaned))
+        end
+        pcall(os.remove,data.."/readtime-recovery-v1.json")
+    end
     -- Do not rewrite miuread.lua on every plugin construction. Persist only a
     -- real first-run/default/schema migration, and never turn a settings write
     -- failure into a plugin-load failure.

@@ -101,11 +101,12 @@ function M.decide(input)
         return {winner="remote",reason="initial_cloud_authority"}
     end
 
-    -- Once both sides have a common history, ambiguous clocks are intentionally
-    -- local-first. This avoids a surprise remote jump after near-simultaneous
-    -- writes; the local event then goes through exact upload/readback verification.
-    return {winner="local",reason=(local_changed and remote_changed)
-        and "ambiguous_clock_local_fallback" or "unknown_freshness_local_fallback"}
+    -- beta.5: ambiguous freshness is a real conflict, never an implicit local
+    -- victory. Showing the local page is harmless; writing it back to cloud is
+    -- not. The caller keeps a progress-write fence until a later observation,
+    -- a verified anchor, or an explicit user override resolves the conflict.
+    return {winner="conflict",reason=(local_changed and remote_changed)
+        and "ambiguous_clock_conflict" or "unknown_freshness_conflict"}
 end
 
 
@@ -207,9 +208,12 @@ function M.trusted_verified_anchor(session,state)
     return nil
 end
 
-function M.resolved_finished(winner, local_percent, remote_percent)
-    if winner=="remote" then return (tonumber(remote_percent) or 0)>=100 end
-    return (tonumber(local_percent) or 0)>=100
+function M.resolved_finished(winner, local_finished, remote_finished)
+    -- beta.5: terminal completion is an explicit, independently verified state.
+    -- A whole-book percent (especially server raw 100) cannot create it.
+    if winner=="remote" then return remote_finished==true end
+    if winner=="aligned" then return local_finished==true or remote_finished==true end
+    return local_finished==true
 end
 
 return M

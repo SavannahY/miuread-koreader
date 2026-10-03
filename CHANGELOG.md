@@ -1,5 +1,16 @@
 # Changelog
 
+## 5.9.0-beta.5
+
+- 重构开书进度对账为非阻塞轻量流程：先立即恢复本机页面，后台只读取一次云端 position metadata；已有精确本地快照时不再先跑完整 source mapping，同一本书 60 秒内仅对“已精确对齐”的缓存结果做读取 debounce。
+- 修复 beta.4 的危险 latest-wins 分支：`user_interacted` / 晚到云端不再直接变成 `local wins`。开书冻结 `open_local_snapshot`，优先依据可信 verified anchor 判断哪一端发生变化；双方都变化或无可靠 anchor 时再比较真实阅读事件时间，120 秒 clock-skew grace 内无法安全裁决则进入 conflict。
+- 新增持久化 progress write fence：remote fetch 未完成、remote newer、conflict、remote exact unresolved 等状态一律禁止周期、结束阅读和后台 retry 把本机位置写回云端；只有明确 `LOCAL_NEWER`、重新 aligned，或用户显式手动选择本机上传时才解除。
+- 本地 freshness 与阅读时长功能解耦：第一页恢复只建立 page baseline，不算新的阅读事件；之后真实翻页/跳转才更新本地阅读事件时间，即使用户关闭阅读时间同步也仍可正确参与 latest-wins。
+- `server_raw_percent` 从 canonical position 彻底降级：CloudAnchor、ReadReport 和 finished 判断优先使用 `chapter_uid + co` 映射得到的 canonical progress；服务器异常 `raw_percent=100` 不再把中间章节污染成 100%/finished。
+- 收敛 exact-co 定位：优先复用已验证 `chapter_uid + co -> XPointer` 缓存；普通跳转未精确命中后使用微信正文短 text anchor 在对应本地章节恢复 XPointer，再做 exact verify；percent correction 仅保留一次 bounded fallback，避免 964 -> 144 -> 759 一类振荡。
+- 阅读时间改为 best-effort：正常尝试一次，运行期空闲后最多再尝试一次；仍失败直接 drop，不再跨重启保存 SAFE time debt，也不再让阅读时间失败污染主页总体同步状态。beta.5 首启会清理 beta.4 遗留的 reading-time retry/failure 状态。
+- Schema 继续保持 136；beta.4 的 position-state 标量化与启动 StoreRepair 完整保留。翻译、Extension Center、下载系统、#117/#118 等非同步功能不做行为改动。
+
 ## 5.9.0-beta.4
 
 - 修复 5.9 自动续读的崩溃：云端位置对象中的 `sources` 诊断图可能形成自引用，进入 `position_state` 后在下一次 `U.merge()` 触发 LuaJIT stack overflow；现在所有持久化位置状态都压缩为纯标量坐标，并在 merge 前清理旧状态。

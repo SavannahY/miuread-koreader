@@ -1,1 +1,1 @@
-5.9.0-beta.4：修复 5.9 自动续读的 position_state 循环引用崩溃和首次同步锚点误判；持久化位置改为纯标量快照并可启动自愈，remote_observed 不再冒充 verified_anchor，开书同步等待由 2.5 秒延长至 6 秒。保留 beta.3 的双语翻译、扩展中心、#117/#118 与精确 chapter_uid + co 同步。
+5.9.0-beta.5：重构阅读进度为非阻塞轻量 reconciliation；verified anchor + 阅读事件时间判断新旧，用户翻页不再自动 local-wins，并用持久 progress write fence 阻止未确认状态覆盖云端。隔离 raw_percent 假 100%，exact-co 改为已验证 XPointer / text-anchor 优先并只保留一次 percent fallback；阅读时间降级为 best-effort，失败最多补一次后静默丢弃，不再长期污染主页同步状态。Schema 仍为 136。

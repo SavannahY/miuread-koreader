@@ -475,6 +475,27 @@ local function catalog_row(catalog, wanted_uid, wanted_idx)
     return selected
 end
 
+local function remote_search_anchor(map, text_index)
+    local runes=type(map)=="table" and map.text_runes or nil
+    if type(runes)~="table" or tonumber(text_index)==nil then return nil end
+    local start=math.max(1,math.floor(tonumber(text_index) or 1))
+    local out={}
+    local visible=0
+    for i=start,math.min(#runes,start+96) do
+        local r=tostring(runes[i] or "")
+        if r~="*" then
+            out[#out+1]=r
+            if not r:match("%s") then visible=visible+1 end
+        end
+        if visible>=36 then break end
+    end
+    local text=U.trim(table.concat(out):gsub("%s+"," "))
+    if text=="" then return nil end
+    -- A short content anchor is enough to find the local CREngine XPointer,
+    -- while keeping search cost bounded on large books.
+    return U.utf8_truncate(text,56)
+end
+
 local function nearest_text_index(map, html_boundary)
     local runes = type(map) == "table" and map.runes or nil
     local html_to_text = type(map) == "table" and map.html_to_text or nil
@@ -542,6 +563,8 @@ function M.remoteProgress(reader, record, remote, catalog)
     out.raw_percent = tonumber(out.raw_percent or out.percent)
     out.percent = percent
     out.calculated_percent = percent
+    out.canonical_progress = percent
+    out.search_anchor_text = remote_search_anchor(map, text_index)
     out.chapter_uid = chapter_uid(selected.row) ~= "" and chapter_uid(selected.row) or uid
     out.chapter_idx = chapter_index(selected.row, selected.index)
     out.offset = math.max(0, math.floor(co + 0.5))

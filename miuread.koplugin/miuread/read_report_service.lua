@@ -361,14 +361,23 @@ function Service.run(job)
                 consecutive_unconfirmed = 0
                 blocked = kind == "authentication"
             end
+            local drop_time = time_only and Config.READ_TIME_BEST_EFFORT==true
+                and not result.accepted and not uncertain
+                and consecutive_failures >= math.max(2,tonumber(Config.READ_TIME_MAX_ATTEMPTS) or 2)
             out.generation = generation
             out.seq = sequence
-            out.state = result.accepted and "waiting" or (uncertain and "unconfirmed" or "error")
+            out.state = drop_time and "dropped" or (result.accepted and "waiting" or (uncertain and "unconfirmed" or "error"))
             out.uncertain = uncertain or nil
             out.error_kind = kind or result.error_kind
-            out.paused = blocked
-            local delay = (result.accepted or uncertain) and interval
-                or retry_delay(kind, consecutive_failures, interval)
+            out.paused = drop_time and false or blocked
+            if drop_time then
+                out.dropped_error=tostring(result.error or kind or "retry budget exhausted")
+                carry_remaining=0
+                blocked=false
+                consecutive_failures=0
+            end
+            local delay = drop_time and interval or ((result.accepted or uncertain) and interval
+                or retry_delay(kind, consecutive_failures, interval))
             out.consecutive_failures = consecutive_failures
             out.unconfirmed_count = consecutive_unconfirmed
             out.context_refresh_requested = report_job.force_context == true or nil
@@ -413,14 +422,23 @@ function Service.run(job)
         local kind=classify_error(nil,result)
         if kind == "transport" then SubprocessHygiene.reset_resolver() end
         blocked = kind == "authentication"
-        local delay = retry_delay(kind, consecutive_failures, interval)
+        local drop_time=time_only and Config.READ_TIME_BEST_EFFORT==true
+            and consecutive_failures >= math.max(2,tonumber(Config.READ_TIME_MAX_ATTEMPTS) or 2)
+        local dropped_error=tostring(result or "read report service failed")
+        if drop_time then
+            carry_remaining=0
+            blocked=false
+            consecutive_failures=0
+        end
+        local delay = drop_time and interval or retry_delay(kind, consecutive_failures, interval)
         local due = final_flush and 0 or (completed_at + delay)
         write_service_status({
             generation = generation,
             seq = sequence,
-            state = "error",
+            state = drop_time and "dropped" or "error",
             accepted = false,
-            error = tostring(result or "read report service failed"),
+            error = dropped_error,
+            dropped_error = drop_time and dropped_error or nil,
             error_kind = kind,
             retry_delay = delay,
             consecutive_failures = consecutive_failures,

@@ -1,6 +1,6 @@
 # MiuRead
 
-> **5.9.0-beta.4 · Position Sync Hotfix**
+> **5.9.0-beta.5 · Sync Correctness & Lightweight Reconciliation**
 
 5.9.0 开始把“本机/云端冲突需要用户判断”改为无感云端镜像：打开书籍时自动按同步因果和更新时间选择最新阅读状态，在定位完成前短暂保护翻页；精确 `chapter_uid + co` 仍是最终验收依据。账号书架默认使用微信云端顺序，已读完状态与当前位置分离解析，自动云端跳转可以短时撤回。
 
@@ -18,16 +18,18 @@
 
 完整版本记录见 [`CHANGELOG.md`](CHANGELOG.md)。
 
-当前 beta 开发基线：`5.9.0-beta.4`。本版本以 5.8.0-beta.26 为兼容基线，Schema 升至 136；5.9 beta 阶段对新的 `position_state` 与旧进度字段双写，以便继续验证多设备 latest-wins 而不牺牲回退能力。
+当前 beta 开发基线：`5.9.0-beta.5`。本版本以 5.8.0-beta.26 为兼容基线，Schema 升至 136；5.9 beta 阶段对新的 `position_state` 与旧进度字段双写，以便继续验证多设备 latest-wins 而不牺牲回退能力。
 
 
-## 5.9 beta.4 highlights
+## 5.9 beta.5 highlights
 
-- 修复 position_state 保存运行时 `sources` 自引用后触发的 LuaJIT stack overflow，并自动修复 beta.1–3 已留下的嵌套位置快照。
-- `remote_observed` 不再冒充 verified anchor，首次/无共同锚点对账不会错误把旧本机位置判成“更新”。
-- 开书同步默认等待 6 秒再本机 fallback，减少 Kindle 上“云端尚未确认”过早出现。
-- 完整保留 beta.3 的外文翻译和 Extension Center UX。
-- `chapter_uid + co` 精确验收、云端书架顺序和 Schema 136 保持不变。
+- 开书立即恢复本机页面，云端 position metadata 在后台确认；已有精确本地快照时先走轻量 freshness 判断，remote 确认更新后才启动重型定位。
+- 删除“用户已经翻页 → local wins”的旧语义；以可信 verified anchor + 真实阅读事件时间统一判断 `LOCAL_NEWER / REMOTE_NEWER / ALIGNED / CONFLICT`。
+- 新增 progress write fence：remote 未确认、remote newer 或 conflict 时禁止自动本机写回，避免旧 Kindle 位置覆盖更新云端。
+- `raw_percent` 仅保留为诊断字段；canonical progress、finished、CloudAnchor 与 ReadReport 均以精确位置状态为准。
+- exact-co 定位加入已验证 XPointer 缓存和 text-anchor rescue，percent correction 最多一次 bounded fallback。
+- 阅读时间改为 best-effort：运行期最多两次尝试，仍失败静默丢弃，不再跨重启持久 pending 或污染主页总体同步状态。
+- Schema 136 与 beta.4 的 position-state stack overflow StoreRepair 保持不变。
 
 ## Installation
 

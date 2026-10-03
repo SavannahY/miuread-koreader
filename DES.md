@@ -1,54 +1,81 @@
-# 5.9.0-beta.4 — Position Sync Hotfix
+# 5.9.0-beta.5 — Sync Correctness & Lightweight Reconciliation
 
-本版本以 5.9.0-beta.3 为基线，只修复 5.9 Cloud Mirror/自动续读链路中的两个严重问题。Schema 继续保持 136；PR #120 外文翻译、Extension Center UX、#117/#118 增强修复均完整保留。
+本版本以 5.9.0-beta.4 为基线，只收口阅读同步链路；不新增翻译、扩展中心或下载功能。Schema 继续保持 136，beta.4 的 position-state 标量化与启动 StoreRepair 保留。
 
-## 1. 修复 position_state stack overflow
+## 1. 开书同步改为非阻塞轻量对账
 
-5.9 beta.1–3 的云端位置对象可能附带运行时诊断字段 `sources`。该字段在某些路径中包含 `sources.web -> 当前 remote 对象` 的自引用。若整个 remote 对象进入 `position_state.remote_position`，Store 下一次深度 `U.merge()` 会沿循环图不断递归，最终触发 LuaJIT `stack overflow`。
+打开书籍后立即恢复 Kindle 本地页面，云端位置在后台确认。6 秒只限制“正在后台确认云端位置…”提示，不再锁输入，也不再代表本机获胜。
 
-本版本做三层保护：
+开书瞬间冻结 `open_local_snapshot`（`chapter_uid + co + local_read_at + local_seq`）。已有精确本地快照时，自动路径先做一次 raw remote metadata fetch，再决定是否需要 source mapping / XPointer；只有 remote 确认更新时才进入重型定位。已精确对齐的同书结果可在 60 秒内复用，旧缓存绝不能授权本机写云端。
 
-- `position_state.local_position / remote_position / verified_anchor` 只允许保存明确白名单中的 string/number/boolean 标量坐标。
-- `Store:save_session()` 在深度 merge **之前**先压缩现有 session 和 incoming patch，循环诊断图不会再进入 merge。
-- 启动时检查 beta.1–3 已留下的嵌套位置快照；只有发现嵌套/循环风险时才自动压缩并落盘，正常设置不会每次启动重写。
+## 2. latest-wins：用户操作不再等于 local wins
 
-本地位置快照仍保留同步所需的 `progress / chapter_uid / co / basis / native_offset / sequence / epoch` 等字段，不降低精确同步能力。
+beta.4 的 `automatic_check_after_user_interaction` / late-remote local-wins 语义已移除。
 
-## 2. 修复 latest-wins 锚点误判
+统一 resolver 使用：
 
-云端请求完成后，MiuRead 会保存 `remote_observed` 作为“刚刚看到的云端位置”。它不是本机和云端曾经共同确认过的位置。beta.1–3 在没有旧 verified anchor 时可能把这个刚观察到的 remote 当作历史 `verified_anchor`，从而得出错误结论：
+- local 与 remote 相对上一次可信 verified anchor 的变化关系；
+- 双方都变化或无可靠 anchor 时，再比较真实阅读事件时间；
+- 时间差处于 120 秒 clock-skew grace 且位置不同、又无法由 anchor 判断时，进入 `conflict`，不猜测赢家。
 
-> remote 与 anchor 相同 → remote 未变化；local 与 anchor 不同 → local 更新 → 错选本机。
+普通翻页只影响“现在是否适合自动跳转”，不改变开书前 freshness。目录/搜索/进度条等明显大跨度 reposition 会阻止晚到 remote 突然打断阅读，但同样不会授权本机覆盖 remote。
 
-现在：
+## 3. progress write fence
 
-- 开始云端请求前先冻结 pre-fetch resolution context。
-- `remote_observed` 永远不能作为 verified anchor。
-- 只有 `verified_chapter_uid + verified_chapter_offset`、有效 `remote_verified` 历史或已确认 aligned state 才能构成 trusted anchor。
-- 第一次对账且本机没有 durable local event 时，带可靠更新时间的云端位置可以正常胜出。
+自动进度写入增加持久安全栅栏。以下状态默认禁止本机进度写回微信读书：
 
-这避免了“云端已经在末章/100%，本机刚打开第 1–2 章，却把本机错误上传覆盖云端”的风险。
+- remote fetch 尚未完成或失败；
+- remote newer / remote newer pending；
+- conflict；
+- remote exact mapping / verification unresolved。
 
-## 3. 开书同步体验
+栅栏覆盖周期、结束阅读、后台 retry 等自动写入入口。只有 resolver 明确确认 `LOCAL_NEWER`、双方重新 `ALIGNED`，或用户显式执行手动本机上传时才允许写入。
 
-默认 `OPEN_SYNC_SOFT_TIMEOUT_SECONDS` 从 **2.5 秒**调整为 **6 秒**。Kindle 上精确本地映射 + 微信云端读取常常需要 3–5 秒；原 2.5 秒会过早解除保护并提示云端未确认，与“先同步最新位置再允许翻页”的目标冲突。
+离线 Kindle 恢复网络后同样必须先读取 current remote，再决定是否上传本机 pending progress。
 
-6 秒内继续显示：
+## 4. canonical progress 与 raw percent 分离
 
-> 正在同步最新阅读位置…
+微信返回的 `raw_percent` 只保留为诊断值。只要存在可信 `chapter_uid + co`，canonical progress 必须由精确坐标映射得到。
 
-若 6 秒后仍未完成，才先使用本机位置，并提示：
+`raw_percent` 不再参与：
 
-> 云端响应较慢，已先使用本机位置；后台继续确认
+- latest-wins；
+- CloudAnchor canonical progress；
+- verified anchor；
+- reading-time position guard；
+- finished / 100% 判断。
 
-用户开始翻页后，晚到的云端结果仍不得突然跳转。
+Finished 继续要求独立的末章 + terminal-coordinate 条件，服务器单独返回 100% 不具权威性。
 
-## 4. 保持不变
+## 5. exact-co：text anchor / XPointer 优先
+
+remote newer 时的定位顺序收敛为：
+
+1. 已验证 `chapter_uid + co -> XPointer` 缓存；
+2. 初始 direct / approximate jump；
+3. `chapter_uid + co` exact verify；
+4. 未命中时，从 remote co 周围提取短正文 anchor，在对应本地章节 `findAllText()` 并恢复 XPointer；
+5. 再次 exact verify；
+6. 最多一次 bounded percent fallback；
+7. 仍失败则 rollback，并保持 write fence。
+
+不再使用多轮 percent correction 作为迭代求解器。
+
+## 6. 阅读时间降级为 best-effort
+
+阅读进度仍按强可靠链路处理；阅读时间改为统计型 best-effort：
+
+- 正常发送一次；
+- busy / 临时失败后，运行期空闲时最多再尝试一次；
+- 第二次仍失败直接 drop；
+- 不跨重启持久化 reading-time debt；
+- 不再把阅读时间失败显示为主页长期同步失败。
+
+beta.5 首次启动会清理 beta.4 遗留的 reading-time pending/retry/failure 状态，但不会清理进度 pending、verified anchor 或批注 pending。
+
+## 7. 保持不变
 
 - Schema 136。
-- `chapter_uid + co` 为最终精确验收依据，percent 仍只用于导航。
-- 8 秒自动定位撤回、late-remote 用户交互保护。
-- PR #120 原文 / 双语 / 仅译文、官方译文生成和 EPUB 安全替换。
-- Extension Center 后台发现更新、推荐列表隐藏旧版本号、下载页首屏扩展入口和批量更新。
-- #117 clipboard / 1%→100% 修复和后续终态保护。
-- #118 XML/CDATA/identity 与后续 MiuRead manifest/XMP 防污染。
+- beta.4 position-state stack overflow 热修和启动自愈。
+- `chapter_uid + co` 仍是最终进度确认依据。
+- PR #120 翻译、Extension Center、下载系统、#117/#118、低内存保护等不在本版改动范围。
