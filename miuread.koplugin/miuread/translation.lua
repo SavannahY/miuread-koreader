@@ -1,8 +1,11 @@
 -- Display and native-position migration for official WeRead XHTML. Display
 -- changes use CSS only; generated refreshes verify unchanged original blocks
 -- before migrating highlights. Only paired blocks may hide their source text.
-local U = require("miuread.util")
 local M = {}
+
+local function trim(value)
+    return (tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", ""))
+end
 
 local INLINE = {span=true, a=true, em=true, strong=true, b=true, i=true, small=true}
 local DISPLAY = {li="list-item", table="table", tr="table-row", td="table-cell", th="table-cell"}
@@ -544,7 +547,7 @@ function M.inspect(path)
         return true
     end)
     if not ok then return nil, meta end
-    local book_id=U.trim(tostring(meta.book_id or ""))
+    local book_id=trim(meta.book_id)
     if book_id=="" then return nil,"translation_book_identity_missing" end
     profile.book_id = book_id
     profile.separable = profile.separable and profile.blocks > 0

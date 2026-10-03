@@ -1433,10 +1433,23 @@ function Plugin:_wait_for_network(label,callback,options)
     local minimum=math.max(0,tonumber(options.minimum_delay) or 0)
     local maximum=math.max(minimum+1,tonumber(options.max_wait) or 45)
     local interval=math.max(.5,tonumber(options.interval) or 2)
+    local require_online=options.require_online==true
+    local function ready_for_sync(elapsed)
+        if self:_network_radio_hint()==false then return false end
+        if not require_online then return true end
+        local state=HomeData.quick_device_state(true,true) or {}
+        -- Kindle may announce NetworkConnected before DNS/sockets are usable.
+        -- Prefer an explicit online signal. Devices without it may fall back
+        -- to a stable connected phase only after a short extra grace period.
+        if state.online==true then return true end
+        local phase=tostring(state.network_phase or "")
+        if state.connected==true and phase=="connected" and elapsed>=minimum+2 then return true end
+        return false
+    end
     local function check()
         if not self._network_wait_tokens or self._network_wait_tokens[label]~=token then return end
         local elapsed=os.time()-started
-        if elapsed>=minimum and self:_network_radio_hint()~=false then
+        if elapsed>=minimum and ready_for_sync(elapsed) then
             self._network_wait_tokens[label]=nil
             callback(true)
             return
@@ -9738,16 +9751,8 @@ function Plugin:_home_action_entries()
         search={icon="⌕",icon_key="search",label="搜索",callback=function() self:search_dialog("搜索微信读书") end},
         downloads={icon="⇩",icon_key="download",label="下载",badge=download_badge,callback=function() self:show_downloads() end},
         sync={icon="⇅",icon_key="sync",label="同步",badge=sync_badge,callback=function()
-            -- beta.9: match the long-press Sync Status path by forcing a fresh
-            -- Home synchronization summary before entering the shared recovery
-            -- pipeline. Keep the actual send/verify rules inside
-            -- _sync_home_pending unchanged.
-            local refreshed=self:_home_sync_summary(true)
-            logger.info("[MiuRead][SyncAction] summary refreshed",
-                "source=", "home_quick",
-                "failed=", tostring(refreshed and refreshed.failed_total or 0),
-                "progress=", tostring(refreshed and refreshed.progress or 0),
-                "active=", tostring(refreshed and refreshed.progress_active or 0))
+            -- beta.11: every manual Sync entry reaches the same progress
+            -- recovery pass. The source tag is diagnostic only.
             self:_sync_home_pending({source="home_quick"})
         end},
         miuread_settings={icon="⚙",icon_key="settings",label="设置",callback=function() self:_show_home_settings_center() end},
@@ -23197,6 +23202,41 @@ function Plugin:_reprocess_home_sync_failures()
     return self:_sync_home_pending()
 end
 
+-- beta.11: Home quick Sync, Sync Status -> 全部重新同步 and
+-- Progress -> 全部重新同步 share this exact durable-progress recovery pass.
+-- The helper does not bypass login/network policy; callers gate before entry.
+function Plugin:_sync_progress_full_recovery(source,silent,on_done)
+    source=tostring(source or "manual")
+    self:_clear_verified_progress_ghosts()
+    local before=self:_progress_sync_issue_items()
+    local send,verify,resubmit,coordinate=0,0,0,0
+    for _,item in ipairs(before) do
+        if item.can_send then send=send+1 end
+        if item.can_verify then verify=verify+1 end
+        if item.can_resubmit then resubmit=resubmit+1 end
+        if item.can_recover_coordinate then coordinate=coordinate+1 end
+    end
+    logger.info("[MiuRead][SyncAction] progress recovery begin",
+        "source=",source,"items=",tostring(#before),
+        "send=",tostring(send),"verify=",tostring(verify),
+        "resubmit=",tostring(resubmit),"coordinate=",tostring(coordinate))
+    local completed=false
+    local function finish(ok)
+        if completed then return end
+        completed=true
+        self:_invalidate_home_sync_status()
+        local remaining=#self:_progress_sync_issue_items()
+        logger.info("[MiuRead][SyncAction] progress recovery end",
+            "source=",source,
+            "result=",remaining==0 and "verified" or (ok==true and "pending" or "failed"),
+            "remaining=",tostring(remaining))
+        if on_done then on_done(ok~=false,remaining) end
+    end
+    local started=self:_retry_all_progress_failures(true,function(ok) finish(ok) end)
+    if started==false and not completed then finish(true) end
+    return started~=false or completed
+end
+
 function Plugin:_sync_home_pending(options)
     options=type(options)=="table" and options or {silent=options==true}
     local silent=options.silent==true
@@ -23295,12 +23335,16 @@ function Plugin:_sync_home_pending(options)
     end
 
     local function phase_progress()
-        local items=self:_progress_sync_issue_items()
-        if #items<=0 then return phase_time() end
-        local started=self:_retry_all_progress_failures(true,function()
+        local advanced=false
+        local started=self:_sync_progress_full_recovery(source,true,function()
+            if advanced then return end
+            advanced=true
             UIManager:scheduleIn(.20,phase_time)
         end)
-        if not started then return phase_time() end
+        if started==false and not advanced then
+            advanced=true
+            return phase_time()
+        end
         return true
     end
 
@@ -23338,18 +23382,44 @@ function Plugin:_sync_home_pending(options)
         return phase_progress()
     end
 
-    -- beta.7: an explicit Home Sync tap is progress-first. Do not wait for the
-    -- annotation-summary cache before attempting a known durable progress
-    -- transaction; that delay made the quick action appear ineffective while
-    -- the detail screen could recover the very same item immediately.
+    -- beta.11: every explicit Sync entry runs the same durable-progress pass
+    -- before time/annotations, even when the cached Home summary says zero.
+    -- Login and radio gates remain authoritative and are checked before any
+    -- recovery request so the shared helper never weakens existing safety.
     if manual then
         self:_clear_verified_progress_ghosts()
         local progress_items=self:_progress_sync_issue_items()
         log_progress_snapshot("manual_preflight",progress_items)
+        local logged_in=self:logged_in()
+        local radio=self:_network_radio_hint()
+        local device_state=HomeData.quick_device_state(false) or {}
+        logger.info("[MiuRead][SyncAction] gate",
+            "source=",source,"logged_in=",tostring(logged_in),
+            "radio=",tostring(radio),"online=",tostring(device_state.online))
+        if not logged_in then
+            logger.warn("[MiuRead][SyncAction] finish",
+                "source=",source,"result=blocked","reason=login_required")
+            UIManager:show(ConfirmBox:new{
+                text="同步失败项目仍保留在本机。\n\n请先恢复微信读书登录，登录成功后觅阅会自动重新处理可安全重试的项目。",
+                ok_text="账号状态",cancel_text="稍后",
+                ok_callback=function() self:show_account_status() end,
+            })
+            release_manual()
+            return false
+        end
+        if radio==false then
+            logger.warn("[MiuRead][SyncAction] finish",
+                "source=",source,"result=blocked","reason=wifi_off")
+            self:info("当前 Wi-Fi 未开启。\n\n同步失败项目仍保留在本机；网络恢复后可再次点击同步。")
+            release_manual()
+            return false
+        end
         if #progress_items>0 then
             self:status_toast("重新同步","正在优先处理 "..tostring(#progress_items).." 本阅读进度",3)
-            return phase_progress()
+        else
+            self:status_toast("重新同步","正在确认阅读进度同步状态",2)
         end
+        return phase_progress()
     end
 
     local age=os.time()-(tonumber(self._annotation_summary_cache_at) or 0)
@@ -28932,7 +29002,22 @@ function Plugin:onNetworkConnected()
         elseif self.ui and self.ui.document and self:_reader_session_is_weread() then
             local prefs=self.store:preferences().sync or {}
             if prefs.auto_latest_position~=false and not self._progress_check_running then
-                self:ensure_read_report_progress("network_restored",true)
+                logger.info("[MiuRead][ResumeSync] waiting_network","source=network_restored")
+                self:_wait_for_network("reader-progress-online",function(ready)
+                    if not (self.ui and self.ui.document) then return end
+                    if ready then
+                        if not self._progress_check_running then
+                            logger.info("[MiuRead][ResumeSync] network_online","source=network_restored")
+                            logger.info("[MiuRead][ResumeSync] reconcile_started","source=network_restored")
+                            self:ensure_read_report_progress("network_restored",true)
+                        end
+                    else
+                        local r=self.sync:record()
+                        if r then self:_save_progress_state(tostring(r.book.book_id),"waiting_network",
+                            "网络恢复尚未完成，保留本地位置等待后续同步",nil,nil) end
+                        logger.warn("[MiuRead][ResumeSync] network_wait_timeout","source=network_restored")
+                    end
+                end,{minimum_delay=2.5,max_wait=45,interval=1,require_online=true})
             end
         end
         if HomeView.is_shown() and not self:_active_reader_ui() then
@@ -30626,15 +30711,21 @@ function Plugin:onResume()
     end
     self.sync:on_resume(slept)
     if recheck then
-        self:_wait_for_network("resume-progress",function(ready)
+        logger.info("[MiuRead][ResumeSync] waiting_network","source=resume_recheck")
+        self:_wait_for_network("reader-progress-online",function(ready)
             if ready and self.ui and self.ui.document then
-                self:ensure_read_report_progress("resume_recheck",true)
+                if not self._progress_check_running then
+                    logger.info("[MiuRead][ResumeSync] network_online","source=resume_recheck")
+                    logger.info("[MiuRead][ResumeSync] reconcile_started","source=resume_recheck")
+                    self:ensure_read_report_progress("resume_recheck",true)
+                end
             elseif self.ui and self.ui.document then
                 local r=self.sync:record()
                 if r then self:_save_progress_state(tostring(r.book.book_id),"waiting_network",
                     "设备已唤醒，等待 Wi-Fi 完全恢复",nil,nil) end
+                logger.warn("[MiuRead][ResumeSync] network_wait_timeout","source=resume_recheck")
             end
-        end,{minimum_delay=6,max_wait=75,interval=3})
+        end,{minimum_delay=6,max_wait=75,interval=2,require_online=true})
     end
 end
 function Plugin:_post_reader_work_needed()

@@ -1,17 +1,17 @@
 {
-  "version": "5.9.0-beta.9",
-  "name": "觅阅 · 微信读书助手 5.9.0-beta.9 内测版",
+  "version": "5.9.0-beta.11",
+  "name": "觅阅 · 微信读书助手 5.9.0-beta.11 内测版",
   "channel": "beta",
   "package_type": "full",
-  "package_url": "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.9/miuread-v5.9.0-beta.9-full.zip",
+  "package_url": "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.11/miuread-v5.9.0-beta.11-full.zip",
   "package_urls": [
-    "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.9/miuread-v5.9.0-beta.9-full.zip",
-    "https://ghfast.top/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.9/miuread-v5.9.0-beta.9-full.zip",
-    "https://gh-proxy.com/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.9/miuread-v5.9.0-beta.9-full.zip",
-    "https://ghproxy.net/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.9/miuread-v5.9.0-beta.9-full.zip"
+    "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.11/miuread-v5.9.0-beta.11-full.zip",
+    "https://ghfast.top/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.11/miuread-v5.9.0-beta.11-full.zip",
+    "https://gh-proxy.com/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.11/miuread-v5.9.0-beta.11-full.zip",
+    "https://ghproxy.net/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.11/miuread-v5.9.0-beta.11-full.zip"
   ],
-  "size": 2023375,
-  "sha256": "5541df90d40fbff5b2d41c522622600f53b1410b41b88b1342a6806838b71eec",
-  "summary": "5.9.0-beta.9：主页短按“同步”先强制刷新同步状态，再进入现有 recovery；新增 SyncAction source/结果诊断日志，用于直接比较 home_quick 与 sync_status_all。同步核心算法不改，Schema 仍为 136。",
-  "notes": "5.9.0-beta.9：主页短按“同步”先强制刷新同步状态，再进入现有 recovery；新增 SyncAction source/结果诊断日志，用于直接比较 home_quick 与 sync_status_all。同步核心算法不改，Schema 仍为 136。"
+  "size": 2024303,
+  "sha256": "ef0ee0ebbca44a3a021811dea4d48fac8bdfd3834db852c53dc1bdb5db3011d1",
+  "summary": "统一主页与二级菜单的手动 progress recovery；唤醒后等待 online-ready 再执行进度 reconcile。保留 beta.10 翻译/Release 修复，不修改 time-writer ownership。",
+  "notes": "统一主页与二级菜单的手动 progress recovery；唤醒后等待 online-ready 再执行进度 reconcile。保留 beta.10 翻译/Release 修复，不修改 time-writer ownership。"
 }

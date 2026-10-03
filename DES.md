@@ -1,3 +1,5 @@
-# 5.9.0-beta.9
+# 5.9.0-beta.11
 
-本版只做主页同步入口一致性和诊断增强。主页短按“同步”会先强制刷新同步状态，再进入与“同步状态 → 全部重新同步”相同的 recovery pipeline；新增 `SyncAction` source/结果日志，便于直接比较短按与二级菜单行为。进度提交/确认、安全重传、worker、resolver、reading-time daemon 等同步核心算法不改，Schema 仍为 136。
+本版以 beta.10 为基线，收口手动同步入口与唤醒网络时序。主页短按“同步”、同步状态“全部重新同步”和进度失败页“全部重新同步”统一进入同一个 durable progress recovery helper，并在进入前统一执行登录与 Wi-Fi gate；即使主页缓存暂时显示 0 个失败项，手动同步仍会先完成 progress verification/recovery pass，再处理 SAFE 阅读时间与批注。设备/Kindle 唤醒后的自动进度对账新增 online readiness gate，不再把 `NetworkConnected` 直接视为微信读书 API 已可用。
+
+本版不采用高风险的 time-writer detach 方案，`miuread/sync.lua` 保持 beta.10/beta.8 字节不变；完整保留 beta.10 的 translation 顶层纯 Lua、数字 bookId 支持以及“先测试后建 tag”的 Release 流程。Schema 仍为 136。

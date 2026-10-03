@@ -1,1 +1,1 @@
-5.9.0-beta.9：主页短按同步先强制刷新同步状态，再进入现有 recovery；新增 home_quick / sync_status_all 等 SyncAction 诊断日志。同步核心算法不改，Schema 136。
+5.9.0-beta.11：统一主页/二级菜单手动 progress recovery，并在唤醒后等待真正 online-ready 再执行进度 reconcile；保留 beta.10 翻译与 Release 修复，不改 time-writer ownership，Schema 136。

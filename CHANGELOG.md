@@ -1,3 +1,22 @@
+## 5.9.0-beta.11 - Unified Manual Progress Recovery & Wake Network Readiness
+
+- 以 beta.10 为基线，主页短按“同步”、同步状态“全部重新同步”和进度失败页“全部重新同步”统一进入 `_sync_progress_full_recovery()`；入口 `source` 只用于诊断，不再因为 UI 路径不同而改变 progress recovery。
+- 所有手动同步在进入共享 progress recovery 前统一执行登录与 Wi-Fi radio gate；保留 `pending_send / submitted_unverified`、verify-first、安全重传和冲突保护，不通过 UI 路径绕过现有安全条件。
+- 手动同步即使主页缓存暂时显示 0 个失败项，也会先执行同一 progress verification/recovery pass，再依次处理 SAFE 阅读时间与批注，减少“主页单击无动作、二级菜单可恢复”的路径差异。
+- Kindle/设备唤醒后的阅读进度 reconcile 增加 online readiness gate：`NetworkConnected` 不再等同于 API 已可用，优先等待 `online=true`，无显式 online 字段时仅在稳定 `connected` 状态并经过额外 grace 后继续。
+- `network_restored` 与 `resume_recheck` 共用 `reader-progress-online` waiter，并增加 `[MiuRead][ResumeSync] waiting_network / network_online / reconcile_started / network_wait_timeout` 诊断日志。
+- 暂不采用另一个 beta.9 分支的 time-writer detach/SIGKILL 立即接管方案；`miuread/sync.lua` 保持 beta.10/beta.8 字节不变，继续保留现有 `time_writer_preempt_timeout` 防并发 writer 保护。
+- 完整保留 beta.10 的 translation 纯 Lua 顶层、数字 bookId 支持、先测试后建 tag 的 Release workflow 与 CHANGELOG 标题兼容。Schema 仍为 136。
+
+## 5.9.0-beta.10 - Translation Dependency & Release Reliability
+
+- 保留 beta.9 的主页短按同步状态刷新、共享 recovery pipeline 与 `[MiuRead][SyncAction]` 诊断日志；不修改 progress submit/verify、worker、resolver、reading-time daemon 或 `miuread/sync.lua`。
+- 修复翻译模块依赖边界：撤销 `translation.lua` 顶层 `require("miuread.util")`，避免纯 Lua/LuaJIT 翻译回归测试在加载模块时被迫依赖 KOReader `libs/libkoreader-lfs`。
+- `M.inspect()` 使用模块内纯 Lua `trim()` 校验 `book_id`；继续接受数字等所有非空 bookId，不恢复旧的 `CB_` 限制。
+- `miuread.util` 继续只在确实需要 `U.copy()` 等功能的迁移路径中按需加载，恢复 beta.5 已验证的低耦合结构。
+- Beta Release 保持“版本校验 → 完整回归测试 → 创建 tag → 打包/发布”的顺序，并继续兼容 CHANGELOG 的 ASCII `-` 与长破折号 `—` 标题。
+- 新增 beta.10 verifier，锁定 translation 顶层无 KOReader util 依赖、数字 bookId 能力与 release 测试先于 tag 的约束。Schema 仍为 136。
+
 ## 5.9.0-beta.9 - Home Sync Entry Consistency & Diagnostics
 
 - 主页快捷“同步”在进入共享 `_sync_home_pending()` recovery pipeline 前，先强制执行 `_home_sync_summary(true)`，与长按“同步 → 同步状态”路径使用相同的前置状态刷新。
