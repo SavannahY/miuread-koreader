@@ -1,1 +1,0 @@
-5.9.0-beta.13：重构精确进度映射为“跳转前预验证”，长 anchor 失败后增加有界短 anchor recovery；用户已翻页时禁止晚到云端结果抢位置，并缓存最近一次精确 chapter/co + XPointer 供退出上传复用。保留 beta.12 强制刷新 source cache、单 writer 与云端回读验证，Schema 136。

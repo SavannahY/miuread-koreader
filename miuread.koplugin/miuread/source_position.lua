@@ -315,99 +315,6 @@ local function locate_anchor(map, anchor)
     }
 end
 
-local function short_anchor_candidates(text, point_side)
-    text=U.trim(tostring(text or "")):gsub("%s+"," ")
-    local total=U.utf8_len(text)
-    if total<18 then return {} end
-    local lengths={56,40,28,18}
-    local out,seen={},{}
-    for _,length in ipairs(lengths) do
-        length=math.min(total,length)
-        if length>=18 and not seen[length] then
-            seen[length]=true
-            local value
-            if tostring(point_side or "start")=="end" then
-                value=U.utf8_sub(text,total-length+1,total)
-            else
-                value=U.utf8_sub(text,1,length)
-            end
-            value=U.trim(value)
-            if U.utf8_len(value)>=18 then out[#out+1]={text=value,length=length} end
-        end
-    end
-    return out
-end
-
-local function secondary_anchor_candidates(text)
-    text=U.trim(tostring(text or "")):gsub("%s+"," ")
-    local total=U.utf8_len(text)
-    if total<36 then return {} end
-    local width=math.min(28,math.max(18,math.floor(total/4)))
-    local starts={math.max(1,math.floor((total-width)/2)+1),math.max(1,total-width+1)}
-    local out,seen={},{}
-    for _,start in ipairs(starts) do
-        local value=U.trim(U.utf8_sub(text,start,math.min(total,start+width-1)))
-        if U.utf8_len(value)>=18 and not seen[value] then
-            seen[value]=true
-            out[#out+1]=value
-        end
-    end
-    return out
-end
-
--- beta.13: a long Reader anchor can legitimately diverge from the original
--- WeRead XHTML when generated EPUB decorations, footnotes or typography fall
--- inside the 24-word window. Keep the exact long match first, then recover from
--- a unique short anchor touching the actual XPointer boundary. Because the
--- recovery anchor touches the boundary (prefix for forward anchors, suffix for
--- backward anchors), its start/end still maps to the same Web Reader `co` and
--- does not require estimating a coordinate from whole-book percentages.
-local function locate_anchor_with_recovery(map, anchor)
-    local located, original_error=locate_anchor(map,anchor)
-    if located then
-        located.recovery_strategy="long_exact"
-        located.matched_anchor_count=1
-        return located,nil
-    end
-    if tostring(original_error)~="not_found" and tostring(original_error)~="ambiguous" then
-        return nil,original_error
-    end
-
-    local point_side=tostring(anchor.point_side or "start")
-    local full_text=U.trim(tostring(anchor.anchor_text or ""))
-    local secondary=secondary_anchor_candidates(full_text)
-    for _,candidate in ipairs(short_anchor_candidates(full_text,point_side)) do
-        local probe=U.copy(anchor)
-        probe.anchor_text=candidate.text
-        -- Context around the original long window may include exactly the EPUB
-        -- decoration that broke the match. The short anchor must be unique on
-        -- its own; secondary anchors below add extra confidence when available.
-        probe.context_before=""
-        probe.context_after=""
-        local recovered,recovery_error=locate_anchor(map,probe)
-        if recovered then
-            local confirmations=1
-            for _,extra in ipairs(secondary) do
-                if extra~=candidate.text then
-                    local check=U.copy(anchor)
-                    check.anchor_text=extra
-                    check.context_before=""
-                    check.context_after=""
-                    local other=locate_anchor(map,check)
-                    if other then confirmations=confirmations+1 end
-                end
-            end
-            recovered.recovery_strategy=confirmations>=2 and "multi_short_edge" or "short_edge_unique"
-            recovered.recovery_original_error=tostring(original_error)
-            recovered.recovery_anchor_chars=U.utf8_len(candidate.text)
-            recovered.matched_anchor_count=confirmations
-            return recovered,nil
-        end
-        original_error=recovery_error or original_error
-    end
-    return nil,original_error
-end
-
 local function locate_single(reader, record, anchor, options)
     options = type(options) == "table" and options or {}
     anchor = type(anchor) == "table" and anchor or {}
@@ -428,7 +335,7 @@ local function locate_single(reader, record, anchor, options)
         map = built
     end
 
-    local located, locate_error = locate_anchor_with_recovery(map, anchor)
+    local located, locate_error = locate_anchor(map, anchor)
     if not located then
         logger.warn("[MiuRead][ProgressSourceDiagnostic]",
             "stage=anchor_locate",
@@ -446,16 +353,6 @@ local function locate_single(reader, record, anchor, options)
             "anchor_end_toc=", tostring(anchor.anchor_end_toc_index or "-"),
             "network_allowed=", tostring(options.cache_only~=true))
         return nil, locate_error
-    end
-
-    if tostring(located.recovery_strategy or "long_exact") ~= "long_exact" then
-        logger.info("[MiuRead][ProgressSourceRecovery]",
-            "book=", tostring(type(record.book)=="table" and (record.book.book_id or record.book.bookId) or ""),
-            "chapter=", tostring(anchor.chapter_uid or ""),
-            "strategy=", tostring(located.recovery_strategy or "unknown"),
-            "anchor_chars=", tostring(located.recovery_anchor_chars or 0),
-            "matched_anchors=", tostring(located.matched_anchor_count or 1),
-            "source_kind=", tostring(cache_meta and cache_meta.kind or "unknown"))
     end
 
     local within = U.clamp(located.norm_before / located.norm_total, 0, 1)
@@ -499,6 +396,7 @@ local function locate_single(reader, record, anchor, options)
         position_basis = native_ok and "wr_data_co" or "weread_source_norm_anchor",
         offset_basis = native_ok and "wr_data_co" or "weread_source_norm_anchor",
         native_offset = native_ok,
+        confidence = native_ok and "native" or "exact",
         source_cache_hit = cache_hit == true,
         source_cache_kind = type(cache_meta) == "table" and tostring(cache_meta.kind or "") or nil,
         source_cache_legacy_recovered = type(cache_meta) == "table" and cache_meta.kind == "legacy_verified" or false,
@@ -518,11 +416,6 @@ local function locate_single(reader, record, anchor, options)
         source_wr_co_error = native_ok and nil or tostring(native_error or "wr_co_unavailable"),
         precision_anchor = tostring(anchor.anchor_kind or "source_anchor"),
         precision_anchor_chars = tonumber(anchor.anchor_chars) or 0,
-        anchor_recovery_strategy = tostring(located.recovery_strategy or "long_exact"),
-        anchor_recovery_chars = tonumber(located.recovery_anchor_chars) or tonumber(anchor.anchor_chars) or 0,
-        anchor_recovery_matches = tonumber(located.matched_anchor_count) or 1,
-        confidence = tostring(located.recovery_strategy or "long_exact")=="long_exact"
-            and (native_ok and "native" or "exact") or "recovered_exact",
     }
 end
 
@@ -678,7 +571,6 @@ function M.remoteProgress(reader, record, remote, catalog)
     local percent = U.clamp(((selected.before + word_offset) / selected.total) * 100, 0, 100)
     local out = U.copy(remote)
     out.raw_percent = tonumber(out.raw_percent or out.percent)
-    out.protocol_percent = tonumber(out.protocol_percent or out.raw_percent)
     out.percent = percent
     out.calculated_percent = percent
     out.canonical_progress = percent

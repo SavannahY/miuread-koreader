@@ -337,17 +337,14 @@ end
 -- Lightweight capture for the new source-coordinate path. It only reads a
 -- small text window around the current XPointer; it never scans the full local
 -- chapter and performs no network request.
-local function capture_at_xpointer(ui, record, catalog, xp)
+function M.capture(ui, record, catalog)
     if type(record) ~= "table" then return nil, "record_missing" end
     local document = ui and ui.document or nil
     local toc = ui and ui.toc or nil
     if not document then return nil, "document_missing" end
-    if type(xp) ~= "string" or xp == "" then return nil, "xpointer_missing" end
-    if type(document.isXPointerInDocument) == "function" then
-        local ok, valid = pcall(document.isXPointerInDocument, document, xp)
-        if ok and valid == false then return nil, "xpointer_invalid" end
-    end
 
+    local xp, xp_error = current_xpointer(ui, document)
+    if not xp then return nil, xp_error end
     local toc_index, toc_error = toc_index_for_xpointer(toc, xp)
     if not toc_index then return nil, toc_error end
     local local_row, uid, idx, standalone, chapter_error = local_chapter(record, toc_index)
@@ -355,9 +352,10 @@ local function capture_at_xpointer(ui, record, catalog, xp)
     local catalog_row, catalog_error = catalog_position(catalog, uid, idx)
     local chapter_only = false
     if not catalog_row then
-        -- Partial/standalone EPUBs may still resolve an exact Web Reader
-        -- chapter coordinate before the full-book catalog is ready. Whole-book
-        -- progress is completed later from the trusted catalog.
+        -- beta.13: a partial/standalone EPUB can still capture an exact Web
+        -- Reader source coordinate before the whole-book catalog is available.
+        -- Whole-book progress is completed later, after a trusted catalog is
+        -- recovered. Full-book EPUBs deliberately keep the old fail-closed path.
         local partial = standalone == true or (record.record and record.record.partial_range == true)
         if not partial or tostring(catalog_error) ~= "full_catalog_missing" then
             return nil, catalog_error
@@ -400,6 +398,9 @@ local function capture_at_xpointer(ui, record, catalog, xp)
         if after_xp then context_after = doc_text(document, anchor_end, after_xp) or "" end
     end
 
+    -- beta.24 diagnostics only: record whether the immutable text window spans
+    -- two TOC chapters. Do not shorten or otherwise change the anchor yet; the
+    -- failure must remain fail-closed until real-device logs identify the cause.
     local anchor_start_toc = anchor_start and select(1, toc_index_for_xpointer(toc, anchor_start)) or nil
     local anchor_end_toc = anchor_end and select(1, toc_index_for_xpointer(toc, anchor_end)) or nil
     local anchor_cross_chapter = anchor_start_toc and anchor_end_toc
@@ -438,18 +439,6 @@ local function capture_at_xpointer(ui, record, catalog, xp)
             or tonumber(record.record and (record.record.book_version or record.record.bookVersion)) or 0,
         chapter_candidates = chapter_only and {} or catalog_neighbor_candidates(catalog, catalog_row.index, catalog_row.total),
     }
-end
-
-function M.captureAt(ui, record, catalog, xp)
-    return capture_at_xpointer(ui, record, catalog, xp)
-end
-
-function M.capture(ui, record, catalog)
-    local document = ui and ui.document or nil
-    if not document then return nil, "document_missing" end
-    local xp, xp_error = current_xpointer(ui, document)
-    if not xp then return nil, xp_error end
-    return capture_at_xpointer(ui, record, catalog, xp)
 end
 
 -- Existing local-only precision path kept intact as a fallback. It scans only

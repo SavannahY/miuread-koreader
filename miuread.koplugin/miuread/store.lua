@@ -2445,6 +2445,8 @@ local PROGRESS_SESSION_FIELDS={
     "progress_upload_source","progress_upload_at","progress_upload_percent","progress_upload_chapter_uid",
     "progress_upload_co","progress_upload_remote_co","progress_worker_active","progress_worker_updated_at",
     "progress_resolution_choice","progress_resolution_fingerprint","progress_resolution_at",
+    "local_display_progress","local_display_progress_at","local_display_xpointer","local_display_progress_source",
+    "last_verified_exact_position","pending_unresolved_position",
 }
 
 local function progress_session_sequence(row)
@@ -2465,7 +2467,10 @@ local function progress_session_stamp(row)
         tonumber(row.progress_decided_at or 0) or 0,
         tonumber(row.progress_upload_verified_at or 0) or 0,
         tonumber(row.progress_upload_pending_at or 0) or 0,
-        tonumber(row.progress_worker_updated_at or 0) or 0
+        tonumber(row.progress_worker_updated_at or 0) or 0,
+        tonumber(row.local_display_progress_at or 0) or 0,
+        tonumber(type(row.last_verified_exact_position)=="table" and row.last_verified_exact_position.saved_at or 0) or 0,
+        tonumber(type(row.pending_unresolved_position)=="table" and row.pending_unresolved_position.captured_at or 0) or 0
     )
 end
 
