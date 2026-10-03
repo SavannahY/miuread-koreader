@@ -532,6 +532,39 @@ function Store:new(options)
         end
         pcall(os.remove,data.."/readtime-recovery-v1.json")
     end
+    -- beta.6 regression recovery: beta.5 persisted progress write fences even
+    -- though they described only one reconciliation attempt. Remove those
+    -- durable locks and reclassify fenced exact snapshots as UNSENT so Home
+    -- recovery performs a fresh cloud check before deciding whether to submit.
+    do
+        local sessions=o.db:readSetting("sessions",{}) or {}
+        local cleaned=0
+        for _,session in pairs(sessions) do
+            if type(session)=="table" then
+                local changed=false
+                if session.progress_write_blocked~=nil then session.progress_write_blocked=nil; changed=true end
+                if session.progress_write_block_reason~=nil then session.progress_write_block_reason=nil; changed=true end
+                if session.progress_write_blocked_at~=nil then session.progress_write_blocked_at=nil; changed=true end
+                local pending=type(session.pending_progress)=="table" and session.pending_progress or nil
+                local pending_reason=tostring(pending and pending.pending_reason or "")
+                if pending and (tostring(session.progress_upload_state or "")=="fenced"
+                    or pending_reason:find("^write_fenced:")~=nil) then
+                    session.progress_upload_state="pending_send"
+                    session.progress_submission_phase="unsent"
+                    session.progress_sync_state="deferred"
+                    session.progress_sync_message="beta.5 未发送的位置已恢复；重新确认云端后再决定是否上传"
+                    session.progress_resubmit_allowed=false
+                    changed=true
+                end
+                if changed then cleaned=cleaned+1 end
+            end
+        end
+        if cleaned>0 then
+            o.db:saveSetting("sessions",sessions)
+            startup_dirty=true
+            logger.warn("[MiuRead][StoreRepair] beta.5 progress fences recovered at startup","sessions=",tostring(cleaned))
+        end
+    end
     -- Do not rewrite miuread.lua on every plugin construction. Persist only a
     -- real first-run/default/schema migration, and never turn a settings write
     -- failure into a plugin-load failure.

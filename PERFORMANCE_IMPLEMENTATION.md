@@ -1,4 +1,4 @@
-# 5.9.0-beta.5 performance constraints
+# 5.9.0-beta.7 performance constraints
 
 ## 开书 / 进度 reconciliation
 

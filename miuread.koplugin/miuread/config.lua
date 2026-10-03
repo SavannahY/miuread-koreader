@@ -1,6 +1,6 @@
 local C = {
     NAME = "觅阅 · 微信读书助手",
-    VERSION = "5.9.0-beta.5",
+    VERSION = "5.9.0-beta.9",
     SCHEMA = 136,
     MIN_SUPPORTED_SCHEMA = 113,
     PLUGIN_DIR = "miuread.koplugin",
@@ -138,7 +138,11 @@ local C = {
     OPEN_SYNC_HARD_TIMEOUT_SECONDS = 8,
     LATE_REMOTE_APPLY_WINDOW_SECONDS = 15,
     OPEN_SYNC_READ_DEBOUNCE_SECONDS = 60,
-    POSITION_CLOCK_SKEW_GRACE_SECONDS = 120,
+    -- beta.7: 120s was too conservative on real devices. It turned a clearly
+    -- newer cloud chapter into an ambiguous conflict and made open-sync look
+    -- like it had silently stalled. Keep a small device/server skew guard, but
+    -- let timestamps decide once the difference is materially larger.
+    POSITION_CLOCK_SKEW_GRACE_SECONDS = 30,
     POSITION_UNDO_SECONDS = 8,
 
     -- Coalesce page-turn control snapshots. Reading position stays in memory

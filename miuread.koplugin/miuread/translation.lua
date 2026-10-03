@@ -543,8 +543,9 @@ function M.inspect(path)
         return true
     end)
     if not ok then return nil, meta end
-    if not tostring(meta.book_id or ""):match("^CB_") then return nil, "not_imported_book" end
-    profile.book_id = meta.book_id
+    local book_id=U.trim(tostring(meta.book_id or ""))
+    if book_id=="" then return nil,"translation_book_identity_missing" end
+    profile.book_id = book_id
     profile.separable = profile.separable and profile.blocks > 0
     return profile
 end

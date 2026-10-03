@@ -1,6 +1,6 @@
 # MiuRead
 
-> **5.9.0-beta.5 · Sync Correctness & Lightweight Reconciliation**
+> **5.9.0-beta.9 · Home Sync Entry Consistency & Diagnostics**
 
 5.9.0 开始把“本机/云端冲突需要用户判断”改为无感云端镜像：打开书籍时自动按同步因果和更新时间选择最新阅读状态，在定位完成前短暂保护翻页；精确 `chapter_uid + co` 仍是最终验收依据。账号书架默认使用微信云端顺序，已读完状态与当前位置分离解析，自动云端跳转可以短时撤回。
 
@@ -18,7 +18,7 @@
 
 完整版本记录见 [`CHANGELOG.md`](CHANGELOG.md)。
 
-当前 beta 开发基线：`5.9.0-beta.5`。本版本以 5.8.0-beta.26 为兼容基线，Schema 升至 136；5.9 beta 阶段对新的 `position_state` 与旧进度字段双写，以便继续验证多设备 latest-wins 而不牺牲回退能力。
+当前 beta 开发基线：`5.9.0-beta.9`。本版本以 5.8.0-beta.26 为兼容基线，Schema 升至 136；5.9 beta 阶段对新的 `position_state` 与旧进度字段双写，以便继续验证多设备 latest-wins 而不牺牲回退能力。
 
 
 ## 5.9 beta.5 highlights

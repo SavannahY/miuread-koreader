@@ -57,7 +57,7 @@ end
 -- input:
 -- local_position, remote_position, verified_anchor,
 -- local_seq, verified_seq, local_updated_at, remote_updated_at,
--- clock_skew_grace (seconds, default 120)
+-- clock_skew_grace (seconds, default 30)
 function M.decide(input)
     input=type(input)=="table" and input or {}
     local lp=type(input.local_position)=="table" and input.local_position or nil
@@ -85,7 +85,7 @@ function M.decide(input)
 
     local lt=number(input.local_updated_at,0) or 0
     local rt=number(input.remote_updated_at,0) or 0
-    local grace=math.max(0,number(input.clock_skew_grace,120) or 120)
+    local grace=math.max(0,number(input.clock_skew_grace,30) or 30)
     if lt>0 and rt>0 and math.abs(lt-rt)>grace then
         if rt>lt then return {winner="remote",reason="remote_newer_timestamp",delta=rt-lt} end
         return {winner="local",reason="local_newer_timestamp",delta=lt-rt}
@@ -122,7 +122,7 @@ function M.prefer_nonstale_remote(incoming, stored, clock_skew_grace)
     if M.same_position(incoming,stored) then return incoming,"same_position" end
     local it=number(incoming.updated_at or incoming.updated,0) or 0
     local st=number(stored.updated_at or stored.updated,0) or 0
-    local grace=math.max(0,number(clock_skew_grace,120) or 120)
+    local grace=math.max(0,number(clock_skew_grace,30) or 30)
     if it>0 and st>0 and st-it>grace then
         return stored,"stored_remote_newer"
     end

@@ -1682,7 +1682,9 @@ end
 -- It never marks a position verified: the caller must resolve chapter/co again.
 function Sync:resolve_remote_progress(remote, callback)
     callback=type(callback)=="function" and callback or function() end
-    remote=type(remote)=="table" and U.copy(remote) or nil
+    -- beta.6: never send the runtime remote graph through async JSON IPC.
+    -- `remote.sources.*` may point back to the selected object and forms a cycle.
+    remote=type(remote)=="table" and PositionResolution.snapshot(remote) or nil
     local record=self:record()
     if not remote or not record then callback(nil,"remote_position_context_missing"); return false end
     local map=select(1,self:_progress_catalog(record))
@@ -2371,7 +2373,11 @@ function Sync:mark_verified(book_id, reason, local_percent, remote_percent, posi
     if position then
         local previous=type(position_state.local_position)=="table" and position_state.local_position or {}
         position_state.local_position=PositionResolution.snapshot(position) or {}
-        position_state.local_position.updated_at=tonumber(position.updated_at or previous.updated_at or position.captured_at or verified_at) or verified_at
+        position_state.local_position.updated_at=math.max(
+            tonumber(position.updated_at or 0) or 0,
+            tonumber(previous.updated_at or 0) or 0,
+            tonumber(session_before.local_read_event_at or 0) or 0
+        )
         position_state.local_position.seq=tonumber(session_before.progress_latest_sequence or position.progress_sequence or previous.seq or 0) or 0
     end
     local anchor=type(session_before.cloud_anchor)=="table" and U.copy(session_before.cloud_anchor) or nil
@@ -2425,24 +2431,15 @@ function Sync:_save_local_snapshot(book_id,position)
         return au~="" and au==bu and ac~=nil and bc~=nil and math.abs(ac-bc)<=16
     end
     local event_updated=tonumber(position.updated_at or 0) or 0
-    if event_updated<=0 and previous then
-        if same_position(previous,snapshot) then
-            event_updated=tonumber(previous.updated_at or 0) or 0
+    if event_updated<=0 then
+        if previous and same_position(previous,snapshot) then
+            event_updated=tonumber(previous.updated_at or session.local_read_event_at or 0) or 0
         else
-            -- beta.5 freshness must describe a real reading-position event, not
-            -- the later moment when a precise snapshot happened to be computed.
-            -- on_page() updates last_activity only when the displayed page moves.
+            -- Reading-event time is independent from exact source mapping.
+            -- Page movement updates last_activity even if chapter/co mapping later fails.
             local activity=tonumber(self.last_activity or 0) or 0
-            local durable_read=tonumber(session.last_read_at or 0) or 0
-            if activity>0 then
-                event_updated=activity
-            elseif durable_read>(tonumber(previous.updated_at or 0) or 0) then
-                -- A lifecycle close/suspend timestamp is only consulted after
-                -- an actual coordinate change has already been proven.
-                event_updated=durable_read
-            else
-                event_updated=0
-            end
+            local durable_event=tonumber(session.local_read_event_at or 0) or 0
+            event_updated=math.max(activity,durable_event)
         end
     end
     -- A first technical snapshot created merely because the book opened is not
@@ -5139,6 +5136,69 @@ function Sync:stop_fast(reason, flush_elapsed)
     return barrier_seq
 end
 
+-- beta.7: reading progress is the high-value write. At reader close we may
+-- discover the final exact chapter/co while the best-effort reading-time
+-- service is still inside /web/book/read. Waiting on that low-priority request
+-- made the final progress transaction miss its close window and become UNSENT.
+-- Preempt the time service instead. Any unconfirmed tail seconds are dropped;
+-- they are never replayed, so this cannot double-count reading time.
+function Sync:preempt_reading_time_for_progress(reason, callback)
+    callback=type(callback)=="function" and callback or function() end
+    reason=tostring(reason or "progress_priority")
+    local daemon=self.daemon
+    self:cancel_writer_barrier_waits(reason)
+    self.progress_write_fence=false
+    self.progress_write_fence_seq=0
+    if self.async then self.async:cancel(reason) end
+    self.busy=false
+    self.progress_hold=false
+    self.state="stopped"
+
+    if not daemon or not process_alive(daemon.pid) then
+        self.daemon=nil
+        callback(true,{state="no_active_time_writer"})
+        return true
+    end
+
+    local pid=tonumber(daemon.pid)
+    local paths=daemon.paths
+    if paths and paths.stop then pcall(U.atomic_write,paths.stop,"1",true) end
+    if pid then pcall(signal_process,pid,15) end
+    logger.info("[MiuRead][ReadReport] progress priority preempt requested",
+        "pid=",tostring(pid or "-"),"reason=",reason,
+        "policy=drop_unconfirmed_time_tail")
+
+    local polls=0
+    local hard_killed=false
+    local function finish(ok,state)
+        if self.daemon==daemon then self.daemon=nil end
+        if paths then pcall(self._cleanup_daemon_files,self,daemon) end
+        callback(ok,{state=state,pid=pid})
+    end
+    local function poll()
+        polls=polls+1
+        if not pid or not process_alive(pid) then
+            finish(true,hard_killed and "time_writer_killed" or "time_writer_preempted")
+            return
+        end
+        if polls==6 and not hard_killed then
+            hard_killed=true
+            pcall(signal_process,pid,9)
+            logger.warn("[MiuRead][ReadReport] progress priority forced time-writer stop",
+                "pid=",tostring(pid),"reason=",reason)
+        end
+        if polls>=12 then
+            -- SIGKILL should already have taken effect. Report failure rather
+            -- than starting a competing /web/book/read request blindly.
+            finish(false,"time_writer_preempt_timeout")
+            return
+        end
+        UIManager:scheduleIn(.08,poll)
+    end
+    UIManager:scheduleIn(.05,poll)
+    return true
+end
+
 function Sync:_cancel_record_retry()
     if self.record_retry_task then
         UIManager:unschedule(self.record_retry_task)
@@ -5340,6 +5400,7 @@ function Sync:on_suspend(options)
             and math.max(0,math.floor(tonumber(saved.pending_report_seconds) or 0)) or 0
         local patch={
             last_read_at=now,last_read_path=r.path,
+            local_read_event_at=math.max(tonumber(saved.local_read_event_at or 0) or 0,tonumber(self.last_activity or 0) or 0),
             -- Never invent suspend-time debt. Preserve only seconds previously
             -- proven unsent by the background reporter; suspended wall-clock
             -- time itself is still excluded from reading time.
@@ -5445,6 +5506,7 @@ function Sync:on_close(options)
                     saved_at=now, reason="close",
                 },
                 last_read_at=now,last_read_path=r.path,
+                local_read_event_at=math.max(tonumber(session.local_read_event_at or 0) or 0,tonumber(self.last_activity or 0) or 0),
                 progress_local_percent=position and position.progress or nil,
                 last_close_path=path,last_close_at=now,
             }, false)

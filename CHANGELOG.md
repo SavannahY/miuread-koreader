@@ -1,4 +1,39 @@
+## 5.9.0-beta.9 — Home Sync Entry Consistency & Diagnostics
+
+- 主页快捷“同步”在进入共享 `_sync_home_pending()` recovery pipeline 前，先强制执行 `_home_sync_summary(true)`，与长按“同步 → 同步状态”路径使用相同的前置状态刷新。
+- 不修改 progress submit/verify、UNSENT/SUBMITTED_UNVERIFIED、安全重传、worker 判定、remote/local resolver、clock-skew 或 reading-time daemon 核心算法；`miuread/sync.lua` 保持 beta.8 字节不变。
+- 为手动同步补充 `[MiuRead][SyncAction]` 诊断日志，记录入口 `source`、progress 可执行动作快照以及最终 `success / pending / conflict / blocked / busy` 结果。
+- 长按“同步 → 同步状态 → 全部重新同步”明确标记为 `source=sync_status_all`；进度失败页继续使用 `source=progress_issues`，便于下一份 crash 直接比较不同入口。
+- Schema 仍为 136。
+
+## 5.9.0-beta.8 — Home Refresh & Translation Capability Expansion
+
+- 主页快捷“刷新”现在只有一个行为：完整刷新微信书架、本地书库、已生成书籍关联、最近阅读状态与主页内容，随后执行整页 full refresh；删除“刷新”的长按菜单，避免“当前栏目/整个主页”两套语义。
+- “同步”保持 beta.7 原样，不修改 progress resolver、recovery、writer 优先级、remote jump 或 clock-skew 逻辑。
+- 外文翻译不再把 `CB_` 当作能力开关：所有有效 bookId 的微信读书可重排文本书都可进入“外文翻译”；已有 `.wr-translation` 的章节仍可离线切换原文/双语/仅译文。
+- 生成新译文时取消 API 层的 `CB_` 硬拒绝，数字 bookId 也会尝试微信读书官方会员翻译链路，由官方服务实际决定是否可用；非会员、书籍不支持、网络失败均保持原文和原 EPUB 不变。
+- 保留 #120 的当前章+下一章有界生成、待安装 EPUB、安全校验、阅读位置/划线迁移和 80%–180% 译文字号；Schema 仍为 136。
+
+## 5.9.0-beta.7 — Progress Sync Reliability & Clear Status
+
+- 阅读结束时最终阅读进度现在高于阅读时长：如果低优先级 ReadReport writer 仍占用共享接口，beta.7 会终止该时间 writer 并丢弃未确认的尾段秒数，让最终 chapter/co 立即进入进度提交，不再出现 `final progress parked behind time writer`。
+- 多设备时间戳的 clock-skew grace 从 120 秒缩短到 30 秒；超过 30 秒的明显新旧关系可直接由时间戳决定，30 秒内仍保留 conflict 防误覆盖。
+- 主页快捷“同步”、主页控制面板“同步”和进度失败页“全部重新同步”统一进入同一 recovery pipeline；用户主动点击时优先处理 durable progress，不再先等待同步摘要缓存。
+- 开书同步增加明确终态反馈：冲突、云端检查失败、云端精确坐标缺失和较新云端结果返回过晚都会明确提示；正常 aligned 仍保持轻量。
+- 保留 beta.6 的 session-scoped fence、UNSENT/SUBMITTED_UNVERIFIED 区分、remote scalarization、`local_read_event_at`、raw-percent 隔离和 StoreRepair；Schema 仍为 136。
+
 # Changelog
+
+## 5.9.0-beta.6 — Sync Regression Recovery & Minimal Reconciliation
+
+- Replaces beta.5 durable progress write fences with session-scoped one-shot protection so one failed cloud jump cannot permanently block future local uploads.
+- Recovers beta.5 `fenced` progress records at startup as explicit UNSENT snapshots.
+- UNSENT recovery now fetches current cloud progress and runs the resolver before any submit; it is never mistaken for an already-submitted verification task.
+- Scalarizes remote progress before async IPC to prevent `Recursive encoding of value` from cyclic runtime source graphs.
+- Persists `local_read_event_at` independently from exact chapter/co mapping, so a `source_anchor_not_found` failure no longer erases evidence that the user actually read locally.
+- If native remote source mapping is unavailable, falls back to approximate navigation only as a seed and still requires exact chapter/co verification before accepting the cloud position.
+- Retains beta.5 raw-percent isolation, terminal-progress guard, removal of `user_interacted -> local wins`, best-effort reading time, and beta.4 position-state StoreRepair.
+- Schema remains 136.
 
 ## 5.9.0-beta.5
 
