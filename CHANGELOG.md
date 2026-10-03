@@ -1,4 +1,4 @@
-## 5.9.0-beta.9 — Home Sync Entry Consistency & Diagnostics
+## 5.9.0-beta.9 - Home Sync Entry Consistency & Diagnostics
 
 - 主页快捷“同步”在进入共享 `_sync_home_pending()` recovery pipeline 前，先强制执行 `_home_sync_summary(true)`，与长按“同步 → 同步状态”路径使用相同的前置状态刷新。
 - 不修改 progress submit/verify、UNSENT/SUBMITTED_UNVERIFIED、安全重传、worker 判定、remote/local resolver、clock-skew 或 reading-time daemon 核心算法；`miuread/sync.lua` 保持 beta.8 字节不变。
