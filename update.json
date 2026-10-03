@@ -1,0 +1,17 @@
+{
+  "version": "5.9.0-beta.14",
+  "name": "觅阅 · 微信读书助手 5.9.0-beta.14 内测版",
+  "channel": "beta",
+  "package_type": "full",
+  "package_url": "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.14/miuread-v5.9.0-beta.14-full.zip",
+  "package_urls": [
+    "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.14/miuread-v5.9.0-beta.14-full.zip",
+    "https://ghfast.top/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.14/miuread-v5.9.0-beta.14-full.zip",
+    "https://gh-proxy.com/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.14/miuread-v5.9.0-beta.14-full.zip",
+    "https://ghproxy.net/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.14/miuread-v5.9.0-beta.14-full.zip"
+  ],
+  "size": 2026669,
+  "sha256": "b2bfef3a214d05f7aaed5e132934f47797fcc3ce0028a474dfc1b27fabc1d5e8",
+  "summary": "恢复真机已验证的云端定位 rescue，错误章节才回滚；退出先保存独立本地显示进度，未知进度不再显示 0%。",
+  "notes": "以 beta.12 为稳定基线，撤销 beta.13 跳转前 preflight 与主动 idle exact-cache。保留严格 exact 校验、text-anchor rescue、source force-refresh 和 writer completion；同章 co 未确认时不再自动跳回，也不会把近似坐标写回云端。退出时 local_display_progress 与微信 exact 坐标解耦，source_anchor_not_found 不再使主页回退为 0%。"
+}

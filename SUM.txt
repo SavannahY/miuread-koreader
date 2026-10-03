@@ -1,0 +1,1 @@
+5.9.0-beta.14：以 beta.12 为稳定基线恢复已验证的 post-jump exact/text-anchor rescue；错误章节才回滚，同章 co 未确认不再自动跳回；退出先独立保存本地显示进度，未知进度不再显示 0%，并保留 beta.12 source refresh 与 time-writer completion 修复。Schema 136。
