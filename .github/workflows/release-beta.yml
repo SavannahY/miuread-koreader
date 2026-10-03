@@ -157,13 +157,22 @@ jobs:
           heading = f"## {version}"
 
           for index, line in enumerate(lines):
-              if line == heading or line.startswith(heading + " - "):
+              if (
+                  line == heading
+                  or line.startswith(heading + " - ")
+                  or line.startswith(heading + " — ")
+              ):
                   start = index + 1
                   break
 
           if start is None:
               wrong_heading = f"# {version}"
-              if any(line == wrong_heading or line.startswith(wrong_heading + " - ") for line in lines):
+              if any(
+                  line == wrong_heading
+                  or line.startswith(wrong_heading + " - ")
+                  or line.startswith(wrong_heading + " — ")
+                  for line in lines
+              ):
                   print(f"::error::CHANGELOG.md 使用了一级版本标题：{wrong_heading}")
                   print(f"::error::请改成：## {version}。版本条目必须使用二级标题，一级标题仅用于 # Changelog。")
               else:
@@ -234,33 +243,6 @@ jobs:
             exit 1
           fi
 
-      - name: Ensure release tag
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          BRANCH_SHA="$(git rev-parse HEAD)"
-          REMOTE_TAG_SHA="$(
-            git ls-remote --tags origin "refs/tags/$RELEASE_TAG" \
-              | awk 'NR==1 {print $1}'
-          )"
-
-          if [ -n "$REMOTE_TAG_SHA" ]; then
-            if [ "$REMOTE_TAG_SHA" != "$BRANCH_SHA" ]; then
-              echo "::error::$RELEASE_TAG 已存在，但没有指向 beta 当前 HEAD。"
-              echo "::error::tag=$REMOTE_TAG_SHA, beta=$BRANCH_SHA"
-              echo "::error::请删除错误 tag，或使用新的版本号。"
-              exit 1
-            fi
-            echo "$RELEASE_TAG 已存在且位置正确，继续发布。"
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git tag "$RELEASE_TAG" "$BRANCH_SHA"
-            git push origin "refs/tags/$RELEASE_TAG"
-            echo "已创建 $RELEASE_TAG -> $BRANCH_SHA"
-          fi
-
       - name: Run Lua syntax checks and release regression verifier
         shell: bash
         run: |
@@ -287,6 +269,33 @@ jobs:
           luajit tools/test_internal_links.lua
           python3 tools/test_extension_center_ux.py
           python3 tools/verify_590_beta9.py
+
+      - name: Ensure release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BRANCH_SHA="$(git rev-parse HEAD)"
+          REMOTE_TAG_SHA="$(
+            git ls-remote --tags origin "refs/tags/$RELEASE_TAG" \
+              | awk 'NR==1 {print $1}'
+          )"
+
+          if [ -n "$REMOTE_TAG_SHA" ]; then
+            if [ "$REMOTE_TAG_SHA" != "$BRANCH_SHA" ]; then
+              echo "::error::$RELEASE_TAG 已存在，但没有指向 beta 当前 HEAD。"
+              echo "::error::tag=$REMOTE_TAG_SHA, beta=$BRANCH_SHA"
+              echo "::error::请删除错误 tag，或使用新的版本号。"
+              exit 1
+            fi
+            echo "$RELEASE_TAG 已存在且位置正确，继续发布。"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag "$RELEASE_TAG" "$BRANCH_SHA"
+            git push origin "refs/tags/$RELEASE_TAG"
+            echo "已创建 $RELEASE_TAG -> $BRANCH_SHA"
+          fi
 
       - name: Build beta full package and manifest
         shell: bash

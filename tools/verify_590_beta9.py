@@ -6,6 +6,7 @@ config=(root/'miuread.koplugin/miuread/config.lua').read_text(encoding='utf-8')
 meta=(root/'miuread.koplugin/_meta.lua').read_text(encoding='utf-8')
 ch=(root/'CHANGELOG.md').read_text(encoding='utf-8')
 workflow=(root/'.github/workflows/release-beta.yml').read_text(encoding='utf-8')
+translation=(root/'miuread.koplugin/miuread/translation.lua').read_text(encoding='utf-8')
 sync_bytes=(root/'miuread.koplugin/miuread/sync.lua').read_bytes()
 checks=[]
 def ok(cond,msg): checks.append((bool(cond),msg))
@@ -33,6 +34,11 @@ ok('self:_sync_home_pending({source="progress_issues"})' in main,'progress issue
 ok('lua5.1 tools/test_beta8_home_translation_contract.lua' in workflow,'beta.8 Home/translation regression retained')
 ok('lua5.1 tools/test_beta9_home_sync_contract.lua' in workflow,'release workflow runs beta.9 sync contract')
 ok('python3 tools/verify_590_beta9.py' in workflow,'release workflow runs beta.9 verifier')
+ok('local U = require("miuread.util")' in translation,'translation inspect imports util locally')
+test_step=workflow.find('- name: Run Lua syntax checks and release regression verifier')
+tag_step=workflow.find('- name: Ensure release tag')
+ok(test_step>=0 and tag_step>=0 and test_step<tag_step,'release tests run before tag creation')
+ok('line.startswith(heading + " — ")' in workflow,'release changelog parser accepts em dash headings')
 # beta.9 intentionally does not modify the lower-level sync engine.
 ok(hashlib.sha256(sync_bytes).hexdigest()=='ed10bf4829d4bdc3034117b703333bcff9b5d802594baa29da6fb07cbd41cd5c','beta.8 sync core is byte-identical')
 failed=[m for c,m in checks if not c]

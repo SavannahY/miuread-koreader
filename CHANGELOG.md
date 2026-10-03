@@ -1,9 +1,11 @@
-## 5.9.0-beta.9 — Home Sync Entry Consistency & Diagnostics
+## 5.9.0-beta.9 - Home Sync Entry Consistency & Diagnostics
 
 - 主页快捷“同步”在进入共享 `_sync_home_pending()` recovery pipeline 前，先强制执行 `_home_sync_summary(true)`，与长按“同步 → 同步状态”路径使用相同的前置状态刷新。
 - 不修改 progress submit/verify、UNSENT/SUBMITTED_UNVERIFIED、安全重传、worker 判定、remote/local resolver、clock-skew 或 reading-time daemon 核心算法；`miuread/sync.lua` 保持 beta.8 字节不变。
 - 为手动同步补充 `[MiuRead][SyncAction]` 诊断日志，记录入口 `source`、progress 可执行动作快照以及最终 `success / pending / conflict / blocked / busy` 结果。
 - 长按“同步 → 同步状态 → 全部重新同步”明确标记为 `source=sync_status_all`；进度失败页继续使用 `source=progress_issues`，便于下一份 crash 直接比较不同入口。
+- 修复翻译 EPUB 检查路径遗漏 `miuread.util` 本地引用导致的 `translation.lua:546: attempt to index global U`；翻译生成回归测试可继续执行到后续步骤。
+- 加固 Beta Release workflow：CHANGELOG 标题同时接受 ASCII `-` 与长破折号 `—`，并将完整 Lua/回归测试移动到创建 release tag 之前，避免测试失败留下未发布的版本 tag。
 - Schema 仍为 136。
 
 ## 5.9.0-beta.8 — Home Refresh & Translation Capability Expansion

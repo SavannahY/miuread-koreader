@@ -1,6 +1,7 @@
 -- Display and native-position migration for official WeRead XHTML. Display
 -- changes use CSS only; generated refreshes verify unchanged original blocks
 -- before migrating highlights. Only paired blocks may hide their source text.
+local U = require("miuread.util")
 local M = {}
 
 local INLINE = {span=true, a=true, em=true, strong=true, b=true, i=true, small=true}
