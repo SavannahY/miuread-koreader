@@ -23955,7 +23955,7 @@ function Plugin:ensure_read_report_progress(reason,automatic)
                 self:on_remote_source_conflict(id,localp,remote,true,frozen_local)
                 return
             end
-            self:_save_progress_state(id,"different","已取得云端位置，正在判断最新阅读事件",localp,tonumber(remote.percent))
+            self:_save_progress_state(id,"different","已取得云端位置，正在判断最新阅读事件",localp,tonumber(remote.canonical_progress or remote.calculated_percent))
             self:on_remote_progress(id,localp,remote,true,frozen_local)
         end,{raw_coordinate=true,update_cloud_anchor=false})
         if remote_started==false then
@@ -24004,15 +24004,18 @@ function Plugin:ensure_read_report_progress(reason,automatic)
             end
             self._progress_remote_retries[id]=0
             if remote.conflict then
-                local webp=remote.web and math.floor((tonumber(remote.web.percent) or 0)+.5) or nil
-                local agentp=remote.agent and math.floor((tonumber(remote.agent.percent) or 0)+.5) or nil
+                local web_raw=remote.web and tonumber(remote.web.canonical_progress or remote.web.calculated_percent) or nil
+                local webp=web_raw~=nil and math.floor(web_raw+.5) or nil
+                local agent_raw=remote.agent and tonumber(remote.agent.canonical_progress or remote.agent.calculated_percent) or nil
+                local agentp=agent_raw~=nil and math.floor(agent_raw+.5) or nil
                 self:_save_progress_state(id,"source_conflict","云端两个来源的位置不一致",localp,webp or agentp)
                 self.sync.state="verification_required"
                 self.sync.last_stage="正在自动解析云端位置来源"
                 self:on_remote_source_conflict(id,localp,remote,automatic==true,local_position)
                 return
             end
-            local remotep=math.floor((tonumber(remote.percent) or 0)+.5)
+            local remote_canonical=tonumber(remote.canonical_progress or remote.calculated_percent)
+            local remotep=remote_canonical~=nil and math.floor(remote_canonical+.5) or nil
             local coordinate_match=self:_remote_matches(remote,local_position)
             local local_uid=tostring(local_position.chapter_uid or local_position.chapterUid or "")
             local remote_uid=tostring(remote.chapter_uid or remote.chapterUid or "")
@@ -24125,6 +24128,37 @@ function Plugin:_remote_matches(remote,target)
         return false,nil,nil,meta
     end
     return match(remote)
+end
+
+function Plugin:_remote_verified_near(remote,target,candidate_info)
+    if type(remote)~="table" or type(target)~="table" then return false,nil end
+    local method=tostring(type(candidate_info)=="table" and candidate_info.method or "")
+    -- verified_near is intentionally content-gated. Approximate chapter/page or
+    -- percent candidates may never widen the authoritative co tolerance. A
+    -- text-anchor candidate must also be unique inside the target chapter; a
+    -- chapter-ratio-disambiguated duplicate remains eligible only for strict exact.
+    if method~="text_anchor_xpointer" and method~="cached_exact_xpointer" then return false,nil end
+    if method=="text_anchor_xpointer" and tonumber(candidate_info and candidate_info.hits or 0)~=1 then
+        return false,{reason="near_anchor_not_unique"}
+    end
+    local remote_uid=tostring(remote.chapter_uid or remote.chapterUid or "")
+    local target_uid=tostring(target.chapter_uid or target.chapterUid or "")
+    local remote_co=tonumber(remote.canonical_offset or remote.offset or remote.chapter_offset)
+    local target_co=tonumber(target.canonical_offset or target.chapter_offset or target.offset)
+    if remote_uid=="" or target_uid=="" or remote_uid~=target_uid or remote_co==nil or target_co==nil then
+        return false,nil
+    end
+    local delta=math.abs(remote_co-target_co)
+    local max_delta=tonumber(Config.REMOTE_VERIFIED_NEAR_CO_MAX) or 256
+    if delta>max_delta then return false,{reason="near_co_too_far",co_delta=delta,co_limit=max_delta} end
+    local rp=tonumber(remote.canonical_progress or remote.calculated_percent)
+    local tp=tonumber(target.progress)
+    local pd=rp~=nil and tp~=nil and math.abs(rp-tp) or nil
+    local max_percent=tonumber(Config.REMOTE_VERIFIED_NEAR_PROGRESS_MAX) or .25
+    if pd~=nil and pd>max_percent then
+        return false,{reason="near_progress_too_far",co_delta=delta,progress_delta=pd,progress_limit=max_percent}
+    end
+    return true,{reason="content_anchor_near",co_delta=delta,co_limit=max_delta,progress_delta=pd,method=method}
 end
 
 function Plugin:_prepare_progress_snapshot(book_id,position,persist_sequence)
@@ -24786,145 +24820,106 @@ function Plugin:_use_remote_position(id,localp,remote,options)
     local automatic=options.automatic==true
     local callback=type(options.callback)=="function" and options.callback or function() end
     self:_clear_progress_resolution(id)
-    local remotep=tonumber(remote and (remote.canonical_progress or remote.calculated_percent or remote.percent)) or 0
-    -- A previously verified chapter/co -> XPointer mapping is the cheapest
-    -- exact path. It is still followed by chapter/co verification below.
-    local cached_jump,cached_error=self.sync:jump_cached_remote_position(remote)
-    local cached_jump_attempted=cached_jump==true
-    local jumped,jump_error=cached_jump,cached_error
-    if not jumped then jumped,jump_error=self.sync:jump_remote(remote) end
-    if not jumped then
-        self:_save_progress_state(id,"remote_jump_unconfirmed","无法跳转到云端位置",localp,remotep)
-        self.sync:end_progress_sync("云端位置跳转失败，阅读时间暂缓上传")
-        if not automatic then self:info(tostring(jump_error or "无法跳转到云端阅读位置。").."\n\n当前位置未确认，因此暂不上传阅读时间。") end
-        callback(false,jump_error or "jump_failed")
+    local remotep=tonumber(remote and (remote.canonical_progress or remote.calculated_percent)) or 0
+
+    local candidate_xp,candidate_error,candidate_info=self.sync:resolve_remote_candidate_xpointer(remote)
+    if not candidate_xp then
+        self:_save_progress_state(id,"remote_jump_unconfirmed","云端位置无法生成可验证的本地候选",localp,remotep)
+        self.sync:end_progress_sync("云端位置无法在跳转前完成定位")
+        if not automatic then self:info("云端位置暂时无法在本地生成可靠候选；当前位置未改动。\n\n"..U.first_line(tostring(candidate_error or "候选位置不可用"),160)) end
+        callback(false,candidate_error or "remote_candidate_unavailable")
         return false
     end
-    local correction_attempt=0
-    local text_anchor_attempted=false
-    local chapter_anchor_attempted=false
-    local chapter_anchor_info=nil
-    local chapter_xpointer_retry=false
-    local function verify_jump()
-        UIManager:scheduleIn(.9,function()
-            local started=self.sync:resolve_local_progress(function(actual_position,position_error)
-                if not actual_position then
-                    self:_save_progress_state(id,"remote_jump_unconfirmed","已跳转，但无法精确确认当前位置",localp,remotep)
-                    self.sync:end_progress_sync("云端位置已跳转，但精确位置验证失败")
-                    if not automatic then self:info("已跳到云端位置附近，但暂时无法完成同页级坐标确认。\n\n"
-                        ..U.first_line(tostring(position_error or "精确位置不可用"),160)) end
-                    callback(false,position_error or "position_unavailable")
-                    return
-                end
-                local matched,actual,source,meta=self:_remote_matches(remote,actual_position)
-                local actualp=tonumber(actual_position.progress) or tonumber(localp) or 0
-                logger.info("[MiuRead][ProgressJumpVerify]","book=",id,"attempt=",tostring(correction_attempt+1),
-                    "matched=",tostring(matched==true),
-                    "local_chapter=",tostring(actual_position.chapter_uid or "-"),
-                    "local_co=",tostring(actual_position.canonical_offset or actual_position.chapter_offset or actual_position.offset or "-"),
-                    "remote_chapter=",tostring(remote and remote.chapter_uid or "-"),
-                    "remote_co=",tostring(remote and remote.offset or "-"),
-                    "co_delta=",tostring(meta and meta.co_delta or "-"))
-                if matched then
-                    -- Cache only after authoritative chapter/co verification;
-                    -- approximate or merely searchable XPointers never become trusted.
-                    local verified_xpointer=self:_current_reader_xpointer()
-                    if verified_xpointer then self.sync:cache_remote_xpointer(remote,verified_xpointer) end
-                    self.sync:set_cloud_anchor(id,remote,"remote_position_selected",true)
-                    self.sync:mark_verified(id,"remote_position_selected",math.floor(actualp+.5),tonumber(actual) or remotep,actual_position)
-                    self:_save_progress_state(id,"remote_selected","已采用云端位置",actualp,remotep)
-                    self.sync:end_progress_sync("已采用云端位置，阅读时间开始同步")
-                    if not automatic then self:status_toast("阅读进度同步","已切换并确认云端位置："..string.format("%.1f",remotep).."%",4) end
-                    callback(true,actual_position)
-                    return
-                end
-                local actual_uid=tostring(actual_position.chapter_uid or "")
-                local remote_uid=tostring(remote and remote.chapter_uid or "")
-                local same_chapter=actual_uid~="" and remote_uid~="" and actual_uid==remote_uid
 
-                -- beta.24: preserve beta.23 precision as the primary path. Only
-                -- a proven chapter mismatch activates the UID-anchored rescue.
-                if not same_chapter and actual_uid~="" and remote_uid~="" and not chapter_anchor_attempted then
-                    chapter_anchor_attempted=true
-                    local anchored,anchor_error,anchor_info=self.sync:chapter_anchor_rescue(remote)
-                    if anchored then
-                        chapter_anchor_info=anchor_info
-                        logger.info("[MiuRead][ProgressJump] chapter rescue started",
-                            "book=",id,"from=",actual_uid,"to=",remote_uid,
-                            "method=",tostring(anchor_info and anchor_info.method or "-"))
-                        verify_jump(); return
-                    end
-                    logger.warn("[MiuRead][ProgressJump] chapter rescue unavailable",
-                        "book=",id,"from=",actual_uid,"to=",remote_uid,
-                        "reason=",tostring(anchor_error or "unknown"))
-                end
+    logger.info("[MiuRead][ProgressPreflight] candidate",
+        "book=",id,"method=",tostring(candidate_info and candidate_info.method or "unknown"),
+        "xpointer=",tostring(candidate_xp):sub(1,96))
 
-                -- If the page interpolation itself still missed the target chapter,
-                -- retry once at that chapter's own XPointer. This cannot recurse.
-                if chapter_anchor_attempted and not same_chapter and not chapter_xpointer_retry
-                    and type(chapter_anchor_info)=="table"
-                    and chapter_anchor_info.method~="chapter_start_xpointer"
-                    and type(chapter_anchor_info.xpointer)=="string"
-                    and chapter_anchor_info.xpointer~="" then
-                    chapter_xpointer_retry=true
-                    logger.info("[MiuRead][ProgressJump] chapter xpointer fallback",
-                        "book=",id,"from=",actual_uid,"to=",remote_uid)
-                    if self.sync:jump_xpointer(chapter_anchor_info.xpointer) then verify_jump(); return end
-                end
+    local started,resolve_error=self.sync:resolve_xpointer_progress(candidate_xp,function(candidate_position,position_error)
+        if not candidate_position then
+            self:_save_progress_state(id,"remote_jump_unconfirmed","云端候选位置预验证失败，保持本机位置",localp,remotep)
+            self.sync:end_progress_sync("云端候选位置预验证失败；未跳转")
+            logger.warn("[MiuRead][ProgressPreflight] failed","book=",id,
+                "method=",tostring(candidate_info and candidate_info.method or "unknown"),
+                "error=",tostring(position_error or "position_unavailable"))
+            if not automatic then self:info("云端候选位置未通过精确验证；当前位置未改动。\n\n"..U.first_line(tostring(position_error or "精确位置不可用"),160)) end
+            callback(false,position_error or "preflight_position_unavailable")
+            return
+        end
 
-                -- beta.5: once we know the right chapter, prefer content over
-                -- repeated whole-book percentage interpolation. The remote co is
-                -- converted to a short source-text anchor and matched inside the
-                -- same local chapter to recover a stable XPointer.
-                if same_chapter and not text_anchor_attempted then
-                    text_anchor_attempted=true
-                    local anchored,anchor_error,anchor_info=self.sync:text_anchor_rescue(remote,{skip_cache=cached_jump_attempted})
-                    if anchored then
-                        logger.info("[MiuRead][ProgressJump] text anchor rescue started",
-                            "book=",id,"method=",tostring(anchor_info and anchor_info.method or "text_anchor_xpointer"))
-                        verify_jump(); return
-                    end
-                    logger.warn("[MiuRead][ProgressJump] text anchor rescue unavailable",
-                        "book=",id,"reason=",tostring(anchor_error or "unknown"))
-                end
+        local matched,actual,source,meta=self:_remote_matches(remote,candidate_position)
+        local near,near_meta=false,nil
+        if not matched then near,near_meta=self:_remote_verified_near(remote,candidate_position,candidate_info) end
+        local accepted=matched or near
+        local quality=matched and "exact" or (near and "verified_near" or "unresolved")
+        local accepted_meta=matched and meta or near_meta
+        logger.info("[MiuRead][ProgressPreflight] verify",
+            "book=",id,"accepted=",tostring(accepted==true),"quality=",quality,
+            "method=",tostring(candidate_info and candidate_info.method or "unknown"),
+            "local_chapter=",tostring(candidate_position.chapter_uid or "-"),
+            "local_co=",tostring(candidate_position.canonical_offset or candidate_position.chapter_offset or candidate_position.offset or "-"),
+            "remote_chapter=",tostring(remote and (remote.chapter_uid or remote.chapterUid) or "-"),
+            "remote_co=",tostring(remote and (remote.canonical_offset or remote.offset or remote.chapter_offset) or "-"),
+            "co_delta=",tostring(accepted_meta and accepted_meta.co_delta or "-"))
 
-                -- Percent interpolation is now a single bounded fallback, not an
-                -- iterative solver. This prevents the observed 964 -> 144 -> 759
-                -- oscillation from accepting a worse third landing.
-                local remote_percent=tonumber(remote and (remote.canonical_progress or remote.calculated_percent or remote.percent))
-                if same_chapter and text_anchor_attempted and correction_attempt<1
-                    and remote_percent~=nil and tonumber(actual_position.progress)~=nil then
-                    local error_percent=remote_percent-tonumber(actual_position.progress)
-                    if math.abs(error_percent)<=2.0 and math.abs(error_percent)>=0.01 then
-                        correction_attempt=correction_attempt+1
-                        local correction=U.clamp(remote_percent+error_percent,0,100)
-                        logger.info("[MiuRead][ProgressJump] bounded percent fallback",
-                            "book=",id,"attempt=",tostring(correction_attempt),
-                            "target=",string.format("%.6f",correction),
-                            "error_percent=",string.format("%.6f",error_percent))
-                        if self.sync:jump(correction) then verify_jump(); return end
-                    end
-                end
+        if not accepted then
+            self:_save_progress_state(id,"remote_jump_unconfirmed","云端候选位置与精确章节坐标不一致，保持本机位置",localp,remotep)
+            self.sync:end_progress_sync("云端候选位置未通过精确验证；未跳转")
+            if not automatic then self:info("云端候选位置与微信章节坐标不一致；当前位置未改动。") end
+            callback(false,"exact_coordinate_mismatch")
+            return
+        end
 
-                if chapter_anchor_attempted and same_chapter then
-                    self:_save_progress_state(id,"remote_jump_unconfirmed","已定位到云端章节，但章节内位置验证失败",actualp,remotep)
-                    self.sync:end_progress_sync("已定位到云端章节，但原生坐标仍待精确确认")
-                    if not automatic then self:info("已定位到云端章节，但章节内坐标仍未完全一致。\n\n为避免把近似位置当成精确位置，暂不确认本次进度。") end
-                else
-                    self:_save_progress_state(id,"remote_jump_unconfirmed","已跳转，但章节内位置验证失败",actualp,remotep)
-                    self.sync:end_progress_sync("云端位置仍待精确确认，阅读时间暂缓上传")
-                    if not automatic then self:info("已跳到云端位置附近，但章节内坐标仍未完全一致。\n\n为避免覆盖云端位置，暂不上传阅读时间。") end
-                end
-                callback(false,"exact_coordinate_mismatch")
-            end,{precise=true,prepare_catalog=true,require_cloud_coordinate=true})
-            if not started then
-                self:_save_progress_state(id,"remote_jump_unconfirmed","已跳转，但精确确认任务暂时不可用",localp,remotep)
-                self.sync:end_progress_sync("云端位置精确确认任务暂时不可用")
-                callback(false,"verification_task_unavailable")
-            end
-        end)
+        -- Preflight can outlive the initial open-sync hint. If the user has
+        -- started reading meanwhile, never steal the visible position with a
+        -- late automatic cloud result.
+        if automatic and (self._open_sync_user_interacted==true
+            or self._auto_position_check_user_interacted==true
+            or self._open_sync_explicit_reposition==true) then
+            self:_save_progress_state(id,"remote_newer_pending","云端位置已验证，但用户已开始阅读；本次不自动跳转",localp,remotep)
+            self.sync:end_progress_sync("云端位置已验证但用户已操作；保持本机位置")
+            logger.info("[MiuRead][ProgressPreflight] apply cancelled","book=",id,"reason=user_interacted")
+            callback(false,"user_interacted_during_preflight")
+            return
+        end
+
+        -- Only suppress page-update interaction accounting for the actual
+        -- verified jump. Preflight itself remains non-mutating, so genuine user
+        -- page turns during a slow resolver must still cancel late auto-apply.
+        self._position_resolution_applying=true
+        local jump_ok=self.sync:jump_xpointer(candidate_xp)==true
+        self._position_resolution_applying=false
+        if not jump_ok then
+            self:_save_progress_state(id,"remote_jump_unconfirmed","云端位置已验证，但本地跳转命令失败",localp,remotep)
+            self.sync:end_progress_sync("云端位置验证成功但跳转失败")
+            callback(false,"verified_jump_failed")
+            return
+        end
+
+        candidate_position.verification_quality=quality
+        candidate_position.precision_level=quality=="exact" and "exact_cloud" or "verified_near"
+        candidate_position.updated_at=tonumber(remote and (remote.updated_at or remote.updated) or 0) or os.time()
+        self.sync:cache_remote_xpointer(remote,candidate_xp)
+        self.sync:set_cloud_anchor(id,remote,quality=="exact" and "remote_position_selected" or "remote_position_selected_near",true)
+        self.sync:mark_verified(id,quality=="exact" and "remote_position_selected" or "remote_position_selected_near",
+            math.floor((tonumber(candidate_position.progress) or tonumber(localp) or 0)+.5),
+            tonumber(actual) or remotep,candidate_position)
+        self:_save_progress_state(id,"remote_selected",
+            quality=="exact" and "已采用并精确确认云端位置" or "已采用经内容锚点确认的云端位置",
+            tonumber(candidate_position.progress) or localp,remotep)
+        self.sync:end_progress_sync(quality=="exact" and "已采用云端精确位置" or "已采用云端已验证邻近位置")
+        if not automatic then
+            self:status_toast("阅读进度同步",quality=="exact" and "已切换并确认云端位置" or "已切换到内容锚点确认位置",4)
+        end
+        callback(true,candidate_position)
+    end,{allow_network_fallback=true})
+
+    if started==false then
+        self:_save_progress_state(id,"remote_jump_unconfirmed","云端位置预验证任务暂时不可用",localp,remotep)
+        self.sync:end_progress_sync("云端位置预验证任务暂时不可用")
+        callback(false,resolve_error or "preflight_task_unavailable")
+        return false
     end
-    verify_jump()
     return true
 end
 
@@ -24968,7 +24963,7 @@ function Plugin:on_remote_progress(id,localp,remote,automatic,local_position)
     end
 
     local context=self:_position_resolution_context(id)
-    local remotep=tonumber(remote and (remote.canonical_progress or remote.calculated_percent or remote.percent)) or 0
+    local remotep=tonumber(remote and (remote.canonical_progress or remote.calculated_percent)) or 0
     local result=_G.__MIUREAD_POSITION_RESOLUTION.decide{
         local_position=local_position,remote_position=remote,verified_anchor=context.verified_anchor,
         local_seq=context.local_seq or session.progress_latest_sequence,verified_seq=context.verified_seq or session.progress_verified_sequence,
@@ -25028,8 +25023,10 @@ function Plugin:on_remote_progress(id,localp,remote,automatic,local_position)
         self:_set_progress_write_fence(id,"remote_newer:"..reason)
         local open_age=self._open_sync_started_at and (monotonic_wall_time()-(tonumber(self._open_sync_started_at) or 0)) or 0
         local window=tonumber(Config.LATE_REMOTE_APPLY_WINDOW_SECONDS) or 15
-        if automatic and (self._open_sync_explicit_reposition==true or (open_age>0 and open_age>window)) then
-            local pending_reason=self._open_sync_explicit_reposition==true and "explicit_reposition" or "late_remote_window_expired"
+        local interacted=self._open_sync_user_interacted==true or self._auto_position_check_user_interacted==true
+        if automatic and (self._open_sync_explicit_reposition==true or interacted or (open_age>0 and open_age>window)) then
+            local pending_reason=self._open_sync_explicit_reposition==true and "explicit_reposition"
+                or (interacted and "user_interacted" or "late_remote_window_expired")
             self:_save_progress_state(id,"remote_newer_pending","检测到较新的云端位置；本次不自动跳转，后续阅读事件将重新判断",localp,remotep)
             self.sync:end_progress_sync("云端位置较新但自动跳转窗口已结束")
             self:_open_sync_close(pending_reason,false)
@@ -25044,9 +25041,7 @@ function Plugin:on_remote_progress(id,localp,remote,automatic,local_position)
         local function apply_remote(resolved_remote)
             resolved_remote=type(resolved_remote)=="table" and resolved_remote or remote
             self:_remember_position_rollback(id,local_position)
-            self._position_resolution_applying=true
             return self:_use_remote_position(id,localp,resolved_remote,{automatic=automatic,local_position=local_position,reason=reason,callback=function(ok,actual_position)
-                self._position_resolution_applying=false
                 if ok then
                     self:_clear_progress_write_fence(id,"remote_position_verified")
                     local resolved_local=type(actual_position)=="table" and U.copy(actual_position) or U.copy(local_position)
@@ -25054,18 +25049,22 @@ function Plugin:on_remote_progress(id,localp,remote,automatic,local_position)
                     self:_save_position_resolution(id,"aligned","remote_position_verified",resolved_local,resolved_remote)
                     if automatic then self:_open_sync_close("remote position verified",false); self:_finish_auto_position_check(id,"remote verified"); self:_show_position_undo(resolved_remote) end
                 elseif automatic then
-                    local restored,row=self:_restore_position_rollback("remote exact verification failed",false)
-                    if restored and type(row)=="table" then
-                        row.updated_at=tonumber(row.updated_at or row.captured_at or 0) or 0
-                        self:_save_position_resolution(id,"remote","remote_verification_failed_rollback",row,resolved_remote)
-                        self:_set_progress_write_fence(id,"remote_exact_unresolved")
-                        self:_open_sync_close("remote position unverified; rolled back",false)
-                        self:status_toast("阅读位置","云端位置无法精确确认，已回到本机位置；本次旧位置不会直接覆盖云端",4)
+                    local failure=tostring(actual_position or "remote_preflight_unverified")
+                    self._position_rollback=nil
+                    if failure=="user_interacted_during_preflight" then
+                        self:_set_progress_write_fence(id,"remote_newer_user_interacted")
+                        self:_open_sync_close("remote verified after user interaction",false)
+                        self._open_sync_terminal_notice_shown=true
+                        self:status_toast("检测到较新云端进度","云端位置已确认，但你已经开始阅读；本次未自动跳转，可点“同步”主动采用",5)
+                        self:_finish_auto_position_check(id,"remote pending after user interaction")
                     else
+                        self:_save_position_resolution(id,"remote","remote_preflight_unverified",local_position,resolved_remote)
                         self:_set_progress_write_fence(id,"remote_exact_unresolved")
-                        self:_open_sync_close("remote position unverified",true)
+                        self:_open_sync_close("remote position unverified; local unchanged",false)
+                        self._open_sync_terminal_notice_shown=true
+                        self:status_toast("阅读位置","云端位置未通过跳转前验证；当前位置保持不变，本次不会覆盖云端",4)
+                        self:_finish_auto_position_check(id,"remote preflight unverified")
                     end
-                    self:_finish_auto_position_check(id,"remote unverified")
                 end
             end})
         end
@@ -25116,7 +25115,8 @@ function Plugin:_relative_time(ts)
 end
 function Plugin:show_sync_status(detail)
     local s=self.sync:status()
-    local remote=s.remote and math.floor((s.remote.percent or 0)+.5) or nil
+    local remote_value=s.remote and tonumber(s.remote.canonical_progress or s.remote.calculated_percent) or nil
+    local remote=remote_value~=nil and math.floor(remote_value+.5) or nil
     local local_text=s.local_percent~=nil and (tostring(s.local_percent).."%")
         or (s.local_chapter_percent~=nil and ("本章 "..tostring(s.local_chapter_percent).."%") or "—")
     local current_session={}
@@ -29036,6 +29036,39 @@ function Plugin:onNetworkDisconnected()
     return false
 end
 
+function Plugin:_schedule_last_exact_position_refresh()
+    if self._last_exact_position_task then
+        pcall(UIManager.unschedule,UIManager,self._last_exact_position_task)
+        self._last_exact_position_task=nil
+    end
+    if not self:_reader_session_is_weread() or not self.sync then return false end
+    local generation=tonumber(HOME_SESSION.reader_session_generation or 0) or 0
+    local task
+    task=function()
+        if self._last_exact_position_task~=task then return end
+        self._last_exact_position_task=nil
+        if generation~=tonumber(HOME_SESSION.reader_session_generation or 0) then return end
+        if not (self.ui and self.ui.document) or not self:_reader_session_is_weread() then return end
+        local started,err=self.sync:resolve_display_position(function(position,position_error)
+            if position then
+                local current_record=self.sync:record() or {}
+                logger.info("[MiuRead][ProgressExactCache] idle refresh",
+                    "book=",tostring(current_record.book and current_record.book.book_id or "-"),
+                    "chapter=",tostring(position.chapter_uid or "-"),
+                    "co=",tostring(position.canonical_offset or position.chapter_offset or position.offset or "-"))
+            elseif tostring(position_error or "")~="source_worker_busy" then
+                logger.info("[MiuRead][ProgressExactCache] idle refresh skipped","reason=",tostring(position_error or "unavailable"))
+            end
+        end,{ratio_snapshot=self.sync:local_ratio()})
+        if started==false and tostring(err or "")~="source_worker_busy" then
+            logger.info("[MiuRead][ProgressExactCache] idle refresh unavailable","reason=",tostring(err or "unknown"))
+        end
+    end
+    self._last_exact_position_task=task
+    UIManager:scheduleIn(tonumber(Config.LAST_EXACT_POSITION_REFRESH_DELAY_SECONDS) or 1.4,task)
+    return true
+end
+
 function Plugin:onPageUpdate(page)
     local weread=self:_reader_session_is_weread()
     if weread and self._auto_position_check_active==true and self._position_resolution_applying~=true
@@ -29074,6 +29107,7 @@ function Plugin:onPageUpdate(page)
     self:_schedule_reader_toolbar_state_refresh(current,.55)
     if weread then
         self.sync:on_page(page)
+        self:_schedule_last_exact_position_refresh()
         self:_schedule_thought_prewarm()
     end
 end
@@ -29107,6 +29141,7 @@ function Plugin:_reading_end_sync(reason,options,callback)
     local record_snapshot=U.copy(current)
     local record_generation_snapshot=tonumber(self.sync.record_generation or 0) or 0
     local ratio_snapshot=self.sync:local_ratio()
+    local xpointer_snapshot=self:_current_reader_xpointer()
     local book_id=tostring(current.book.book_id or current.book.bookId or "")
     if book_id=="" then return false end
     local started_at=monotonic_wall_time()
@@ -29284,6 +29319,25 @@ function Plugin:_reading_end_sync(reason,options,callback)
         resolve_attempt=resolve_attempt+1
         local started,resolve_error=self.sync:resolve_local_progress(function(position,position_error,meta)
             local gate_already_released=finished
+            if not position then
+                local saved_session=self.store:session(book_id) or {}
+                local cached=type(saved_session.last_exact_position)=="table" and U.copy(saved_session.last_exact_position) or nil
+                local cached_xp=cached and tostring(cached.source_xpointer or "") or ""
+                local same_xpointer=type(xpointer_snapshot)=="string" and xpointer_snapshot~="" and cached_xp==xpointer_snapshot
+                local cached_basis=cached and tostring(cached.offset_basis or cached.position_basis or "") or ""
+                local cached_exact=cached and cached.safe==true and cached.native_offset==true and cached_basis=="wr_data_co"
+                    and tostring(cached.chapter_uid or cached.chapterUid or "")~=""
+                    and tonumber(cached.canonical_offset or cached.chapter_offset or cached.offset)~=nil
+                if same_xpointer and cached_exact then
+                    position=cached
+                    position.captured_at=os.time()
+                    position.precision_level="exact_cache"
+                    logger.info("[MiuRead][ReadingEnd] reused last exact position",
+                        "book=",book_id,"chapter=",tostring(position.chapter_uid or "-"),
+                        "co=",tostring(position.canonical_offset or position.chapter_offset or position.offset or "-"),
+                        "resolver_error=",tostring(position_error or (meta and meta.error_kind) or "unknown"))
+                end
+            end
             if not position then
                 local coordinate=type(meta and meta.coordinate)=="table" and meta.coordinate or nil
                 if coordinate and self:_save_pending_progress_coordinate(book_id,coordinate,"reading_end_whole_progress_pending") then

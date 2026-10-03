@@ -361,6 +361,7 @@ local function catalog_progress_from_remote(remote, chapters)
     if type(remote)~="table" then return remote end
     chapters=type(chapters)=="table" and chapters or {}
     remote.raw_percent=tonumber(remote.raw_percent or remote.percent)
+    remote.protocol_percent=tonumber(remote.protocol_percent or remote.raw_percent)
 
     -- WeRead's chapterOffset (`co`) is a raw-XHTML UTF-16 source coordinate,
     -- not a wordCount offset. beta.5 incorrectly clamped it to chapter words,
@@ -1383,8 +1384,12 @@ function Sync:_source_position_async(callback, options)
     local worker_busy=self.async:busy()==true
     if worker_busy and not detached then return false, "source_worker_busy" end
 
-    local anchor, anchor_error = PrecisePosition.capture(
-        ui, record, self:_precision_catalog(record))
+    local anchor, anchor_error
+    if type(options.xpointer)=="string" and options.xpointer~="" and type(PrecisePosition.captureAt)=="function" then
+        anchor,anchor_error=PrecisePosition.captureAt(ui,record,self:_precision_catalog(record),options.xpointer)
+    else
+        anchor,anchor_error=PrecisePosition.capture(ui,record,self:_precision_catalog(record))
+    end
     if not anchor then return false, anchor_error end
 
     local generation = tonumber(options.record_generation_override or self.record_generation or 0) or 0
@@ -1473,7 +1478,8 @@ function Sync:_source_position_async(callback, options)
         end
         local current=self:record()
         local mapping_record=detached and record_snapshot or current
-        local adjusted = self:_prefer_inverse_cloud_mapping(mapping_record, value, ratio_snapshot)
+        local adjusted = options.skip_inverse_mapping==true and U.copy(value)
+            or self:_prefer_inverse_cloud_mapping(mapping_record, value, ratio_snapshot)
         adjusted.captured_at = os.time()
         if adjusted.mapping_recovered==true then
             logger.info("[MiuRead][ProgressSource] neighbour chapter mapping recovered",
@@ -1750,24 +1756,38 @@ function Sync:jump_cached_remote_position(remote)
     return false,"remote_xpointer_cache_invalid"
 end
 
-function Sync:text_anchor_rescue(remote,options)
+function Sync:peek_cached_remote_xpointer(remote)
+    local key=remote_xpointer_cache_key(self,remote)
+    local row=key and type(self.remote_xpointer_cache)=="table" and self.remote_xpointer_cache[key] or nil
+    local xp=type(row)=="table" and row.xpointer or nil
+    local ui=self.host and self.host.ui or nil
+    local document=ui and ui.document or nil
+    if type(xp)~="string" or xp=="" then return nil,"remote_xpointer_cache_miss" end
+    if not valid_jump_xpointer(document,xp) then
+        if key then self.remote_xpointer_cache[key]=nil end
+        return nil,"remote_xpointer_cache_invalid"
+    end
+    return xp,nil,{method="cached_exact_xpointer",xpointer=xp,confidence="exact"}
+end
+
+function Sync:find_remote_text_anchor(remote,options)
     options=type(options)=="table" and options or {}
     remote=type(remote)=="table" and remote or {}
     if options.skip_cache~=true then
-        local cached,cache_error,cache_info=self:jump_cached_remote_position(remote)
-        if cached then return true,nil,cache_info end
+        local xp,cache_error,cache_info=self:peek_cached_remote_xpointer(remote)
+        if xp then return xp,nil,cache_info end
         if cache_error~="remote_xpointer_cache_miss" then
             logger.info("[MiuRead][ProgressJump] cached XPointer discarded",tostring(cache_error))
         end
     end
-    local query=U.trim(tostring(remote.search_anchor_text or ""))
-    if query=="" then return false,"text_anchor_missing" end
+    local query=U.trim(tostring(remote.search_anchor_text or "")):gsub("%s+"," ")
+    if query=="" then return nil,"text_anchor_missing" end
     local record=self:record()
     local ui=self.host and self.host.ui or nil
     local document=ui and ui.document or nil
     local toc=ui and ui.toc or nil
     if not record or not document or type(document.findAllText)~="function" or not toc then
-        return false,"text_anchor_search_unavailable"
+        return nil,"text_anchor_search_unavailable"
     end
     local row=type(record.record)=="table" and record.record or {}
     local map=type(row.chapter_map)=="table" and row.chapter_map or {}
@@ -1777,59 +1797,109 @@ function Sync:text_anchor_rescue(remote,options)
         if type(chapter)=="table" and chapter.structural~=true
             and tostring(chapter_uid(chapter) or "")==remote_uid then map_index=index; break end
     end
-    if not map_index then return false,"text_anchor_chapter_missing" end
+    if not map_index then return nil,"text_anchor_chapter_missing" end
     if type(toc.fillToc)=="function" then pcall(toc.fillToc,toc) end
     local items=type(toc.toc)=="table" and toc.toc or {}
     local item=items[map_index]
-    if type(item)~="table" then return false,"text_anchor_toc_missing" end
+    if type(item)~="table" then return nil,"text_anchor_toc_missing" end
     local page_start=tonumber(item.page or item.pageno)
     local next_item=items[map_index+1]
     local page_end=type(next_item)=="table" and tonumber(next_item.page or next_item.pageno) or nil
-    local ok,hits=pcall(document.findAllText,document,query,true,3,40)
-    if not ok or type(hits)~="table" then return false,"text_anchor_search_failed" end
-    local candidates={}
-    for _,hit in ipairs(hits) do
-        local xp=type(hit)=="table" and hit.start or nil
-        local page=tonumber(xp)
-        if type(xp)=="string" and type(document.getPageFromXPointer)=="function" then
-            local okp,p=pcall(document.getPageFromXPointer,document,xp); if okp then page=tonumber(p) end
+
+    local function run_search(needle)
+        local search=ui and ui.search or nil
+        local flags=search and search.current_search_type and search.current_search_type.flags or nil
+        local ok,hits=pcall(document.findAllText,document,needle,true,3,40,false,flags)
+        if not ok then ok,hits=pcall(document.findAllText,document,needle,true,3,40) end
+        if not ok or type(hits)~="table" then return nil,"text_anchor_search_failed" end
+        local candidates={}
+        for _,hit in ipairs(hits) do
+            local xp=type(hit)=="table" and hit.start or nil
+            local page=tonumber(xp)
+            if type(xp)=="string" and type(document.getPageFromXPointer)=="function" then
+                local okp,p=pcall(document.getPageFromXPointer,document,xp); if okp then page=tonumber(p) end
+            end
+            local in_chapter=(not page_start or not page or page>=page_start) and (not page_end or not page or page<page_end)
+            if xp and in_chapter then candidates[#candidates+1]={xpointer=xp,page=page} end
         end
-        local in_chapter=(not page_start or not page or page>=page_start) and (not page_end or not page or page<page_end)
-        if xp and in_chapter then candidates[#candidates+1]={xpointer=xp,page=page} end
+        return candidates,nil
     end
-    if #candidates==0 then return false,"text_anchor_not_found_in_chapter" end
-    local chosen=candidates[1]
-    if #candidates>1 and page_start and page_end and tonumber(remote.chapter_ratio) then
-        local target=page_start+U.clamp(tonumber(remote.chapter_ratio) or 0,0,1)*math.max(1,page_end-page_start)
-        local best=math.huge
-        for _,candidate in ipairs(candidates) do
-            local d=candidate.page and math.abs(candidate.page-target) or math.huge
-            if d<best then best=d; chosen=candidate end
+
+    -- The cloud source anchor starts exactly at the authoritative Web Reader co.
+    -- Shortening only its suffix therefore preserves the intended boundary while
+    -- tolerating generated-EPUB decorations later in the 56-char search window.
+    local total=U.utf8_len(query)
+    local lengths={total,40,28,18}
+    local seen={}
+    local last_error="text_anchor_not_found_in_chapter"
+    for _,wanted in ipairs(lengths) do
+        local length=math.min(total,math.max(1,tonumber(wanted) or total))
+        if length>=18 and not seen[length] then
+            seen[length]=true
+            local needle=U.trim(U.utf8_sub(query,1,length))
+            if U.utf8_len(needle)>=18 then
+                local candidates,search_error=run_search(needle)
+                if candidates then
+                    if #candidates>0 then
+                        local chosen=candidates[1]
+                        local disambiguated=false
+                        if #candidates>1 and page_start and page_end and tonumber(remote.chapter_ratio) then
+                            local target=page_start+U.clamp(tonumber(remote.chapter_ratio) or 0,0,1)*math.max(1,page_end-page_start)
+                            local best=math.huge
+                            for _,candidate in ipairs(candidates) do
+                                local d=candidate.page and math.abs(candidate.page-target) or math.huge
+                                if d<best then best=d; chosen=candidate end
+                            end
+                            disambiguated=true
+                        elseif #candidates>1 then
+                            last_error="text_anchor_ambiguous"
+                            chosen=nil
+                        end
+                        if chosen then
+                            local strategy=length==total and "remote_anchor_full" or "remote_anchor_short_prefix"
+                            logger.info("[MiuRead][ProgressPreflight]","method=text_anchor_xpointer","chapter=",remote_uid,
+                                "hits=",tostring(#candidates),"query_chars=",tostring(length),"strategy=",strategy)
+                            return chosen.xpointer,nil,{
+                                method="text_anchor_xpointer",xpointer=chosen.xpointer,page=chosen.page,hits=#candidates,
+                                query_chars=length,recovery_strategy=strategy,
+                                confidence=(#candidates==1 and "content_unique" or (disambiguated and "content_ratio" or "content")),
+                            }
+                        end
+                    else
+                        last_error="text_anchor_not_found_in_chapter"
+                    end
+                else
+                    last_error=search_error or last_error
+                end
+            end
         end
-    elseif #candidates>1 then
-        return false,"text_anchor_ambiguous"
     end
-    local jumped=self:jump_xpointer(chosen.xpointer)
-    if not jumped then return false,"text_anchor_jump_failed" end
-    logger.info("[MiuRead][ProgressJump]","method=text_anchor_xpointer","chapter=",remote_uid,
-        "hits=",tostring(#candidates),"query_chars=",tostring(U.utf8_len(query)))
-    return true,nil,{method="text_anchor_xpointer",xpointer=chosen.xpointer,page=chosen.page,hits=#candidates}
+    return nil,last_error
 end
 
-function Sync:chapter_anchor_rescue(remote)
+function Sync:text_anchor_rescue(remote,options)
+    local xp,err,info=self:find_remote_text_anchor(remote,options)
+    if not xp then return false,err end
+    if not self:jump_xpointer(xp) then return false,"text_anchor_jump_failed" end
+    logger.info("[MiuRead][ProgressJump]","method=text_anchor_xpointer","chapter=",tostring(remote and (remote.chapter_uid or remote.chapterUid) or ""),
+        "hits=",tostring(info and info.hits or 1),"query_chars=",tostring(U.utf8_len(tostring(remote and remote.search_anchor_text or ""))))
+    return true,nil,info
+end
+
+function Sync:resolve_chapter_anchor_target(remote)
     remote = type(remote) == "table" and remote or {}
     local record = self:record()
-    if not record then return false, "chapter_anchor_record_missing" end
+    if not record then return nil, "chapter_anchor_record_missing" end
     local row = type(record.record) == "table" and record.record or {}
     local mode = self:_record_mode(record)
     if mode ~= "full" or row.partial_range == true then
-        return false, "chapter_anchor_mode_unsupported"
+        return nil, "chapter_anchor_mode_unsupported"
     end
 
     local remote_uid = tostring(remote.chapter_uid or remote.chapterUid or "")
-    if remote_uid == "" then return false, "chapter_anchor_uid_missing" end
+    if remote_uid == "" then return nil, "chapter_anchor_uid_missing" end
     local map = type(row.chapter_map) == "table" and row.chapter_map or {}
-    if #map == 0 then return false, "chapter_anchor_map_missing" end
+    if #map == 0 then return nil, "chapter_anchor_map_missing" end
 
     local map_index, map_row
     for index, chapter in ipairs(map) do
@@ -1839,21 +1909,19 @@ function Sync:chapter_anchor_rescue(remote)
             break
         end
     end
-    -- UID is the identity. Never guess from chapter_idx when the UID is absent
-    -- or no longer exists in the local EPUB: catalog edits can shift ordinals.
-    if not map_index then return false, "chapter_anchor_uid_not_found" end
+    if not map_index then return nil, "chapter_anchor_uid_not_found" end
 
     local ui = self.host and self.host.ui or nil
     local document = ui and ui.document or nil
     local toc = ui and ui.toc or nil
-    if not document or not toc then return false, "chapter_anchor_toc_unavailable" end
+    if not document or not toc then return nil, "chapter_anchor_toc_unavailable" end
     if type(toc.fillToc) == "function" then pcall(toc.fillToc, toc) end
     local items = type(toc.toc) == "table" and toc.toc or nil
-    if not items or #items == 0 then return false, "chapter_anchor_toc_missing" end
-    if map_index < 1 or map_index > #items then return false, "chapter_anchor_toc_out_of_bounds" end
+    if not items or #items == 0 then return nil, "chapter_anchor_toc_missing" end
+    if map_index < 1 or map_index > #items then return nil, "chapter_anchor_toc_out_of_bounds" end
 
     local item = items[map_index]
-    if type(item) ~= "table" then return false, "chapter_anchor_toc_item_missing" end
+    if type(item) ~= "table" then return nil, "chapter_anchor_toc_item_missing" end
     local start_xp = toc_jump_xpointer(document, item)
     local page_start = tonumber(item.page or item.pageno)
     if page_start then page_start = math.floor(page_start + .5) end
@@ -1878,25 +1946,23 @@ function Sync:chapter_anchor_rescue(remote)
     end
 
     local target_page
-    -- For non-final chapters, page interpolation is allowed only when the next
-    -- chapter exposes a real start page. If that boundary is missing we prefer
-    -- the chapter-start XPointer instead of pretending this chapter reaches EOF.
     if ratio ~= nil and page_start and page_start >= 1 and page_end and page_end > page_start then
         local span = page_end - page_start
         target_page = page_start + math.floor(ratio * span)
         target_page = math.max(page_start, math.min(page_end - 1, target_page))
     end
 
-    local method
-    if target_page and self:jump_page(target_page) then
-        method = "chapter_page_ratio"
-    elseif start_xp and self:jump_xpointer(start_xp) then
-        method = "chapter_start_xpointer"
-    elseif page_start and self:jump_page(page_start) then
-        method = "chapter_start_page"
-    else
-        return false, "chapter_anchor_jump_unavailable"
+    local target_xp,method
+    if target_page and type(document.getPageXPointer)=="function" then
+        local okp,xp=pcall(document.getPageXPointer,document,target_page)
+        if okp and valid_jump_xpointer(document,xp) then target_xp=xp; method="chapter_page_ratio" end
     end
+    if not target_xp and start_xp then target_xp=start_xp; method="chapter_start_xpointer" end
+    if not target_xp and page_start and type(document.getPageXPointer)=="function" then
+        local okp,xp=pcall(document.getPageXPointer,document,page_start)
+        if okp and valid_jump_xpointer(document,xp) then target_xp=xp; method="chapter_start_page" end
+    end
+    if not target_xp then return nil,"chapter_anchor_target_unavailable" end
 
     local info = {
         chapter_uid = remote_uid,
@@ -1906,8 +1972,10 @@ function Sync:chapter_anchor_rescue(remote)
         page_start = page_start,
         page_end = page_end,
         target_page = target_page,
-        xpointer = start_xp,
+        xpointer = target_xp,
+        chapter_start_xpointer = start_xp,
         method = method,
+        confidence = method=="chapter_page_ratio" and "approximate" or "chapter_only",
     }
     logger.info("[MiuRead][ChapterAnchor]",
         "book=", tostring(record.book and record.book.book_id or ""),
@@ -1918,7 +1986,68 @@ function Sync:chapter_anchor_rescue(remote)
         "ratio=", ratio ~= nil and string.format("%.6f", ratio) or "-",
         "target_page=", tostring(target_page or "-"),
         "method=", method)
-    return true, nil, info
+    return target_xp,nil,info
+end
+
+function Sync:chapter_anchor_rescue(remote)
+    local xp,err,info=self:resolve_chapter_anchor_target(remote)
+    if not xp then return false,err end
+    if not self:jump_xpointer(xp) then return false,"chapter_anchor_jump_unavailable" end
+    return true,nil,info
+end
+
+function Sync:resolve_remote_candidate_xpointer(remote)
+    remote=type(remote)=="table" and remote or {}
+    local cached,cache_error,cache_info=self:peek_cached_remote_xpointer(remote)
+    if cached then return cached,nil,cache_info end
+
+    local text_xp,text_error,text_info=self:find_remote_text_anchor(remote,{skip_cache=true})
+    if text_xp then return text_xp,nil,text_info end
+
+    local chapter_xp,chapter_error,chapter_info=self:resolve_chapter_anchor_target(remote)
+    if chapter_xp then return chapter_xp,nil,chapter_info end
+
+    -- Last-resort candidate generation may use canonical progress only. Raw
+    -- WeRead percent is protocol metadata and is never allowed to drive a beta.13
+    -- preflight target because it can differ sharply from the generated EPUB.
+    local canonical=tonumber(remote.canonical_progress or remote.calculated_percent)
+    local ui=self.host and self.host.ui or nil
+    local document=ui and ui.document or nil
+    if canonical~=nil and document and type(document.getPageCount)=="function"
+        and type(document.getPageXPointer)=="function" then
+        local okc,count=pcall(document.getPageCount,document)
+        count=okc and tonumber(count) or nil
+        if count and count>=1 then
+            local page=1+math.floor(U.clamp(canonical,0,100)/100*math.max(0,count-1)+.5)
+            local okp,xp=pcall(document.getPageXPointer,document,page)
+            if okp and valid_jump_xpointer(document,xp) then
+                return xp,nil,{method="canonical_percent_candidate",xpointer=xp,page=page,confidence="approximate"}
+            end
+        end
+    end
+    return nil,text_error or chapter_error or cache_error or "remote_candidate_unavailable"
+end
+
+function Sync:resolve_xpointer_progress(xpointer,callback,options)
+    options=type(options)=="table" and U.copy(options) or {}
+    if type(xpointer)~="string" or xpointer=="" then return false,"xpointer_missing" end
+    options.xpointer=xpointer
+    options.detached=false
+    options.skip_inverse_mapping=true
+    if options.allow_network_fallback==nil then options.allow_network_fallback=true end
+    return self:_source_position_async(function(position,err)
+        if type(position)=="table" and position.safe==true then
+            position.precision_level=(position.native_offset==true
+                and tostring(position.offset_basis or position.position_basis or "")=="wr_data_co")
+                and "exact_cloud" or "precise_local"
+            position.canonical_offset=tonumber(position.chapter_offset or position.offset)
+            position.display_progress=tonumber(position.progress)
+            position.display_progress_quality=position.display_progress_quality or "preflight_source_mapped"
+            if callback then callback(position,nil,{source=position.source or "weread_source_anchor"}) end
+        elseif callback then
+            callback(nil,tostring(err or "preflight_position_unavailable"),{error_kind="position"})
+        end
+    end,options)
 end
 
 function Sync:jump_remote(remote)
@@ -2453,7 +2582,19 @@ function Sync:_save_local_snapshot(book_id,position)
     -- Completion is retained only from an independently verified terminal state.
     position_state.finished.local_finished=position_state.finished.local_finished==true
     position_state.finished.remote_finished=position_state.finished.remote_finished==true
-    self.store:save_session(book_id,{local_position_snapshot=snapshot,position_state=position_state})
+    local patch={local_position_snapshot=snapshot,position_state=position_state}
+    local exact_basis=tostring(snapshot.offset_basis or snapshot.position_basis or "")=="wr_data_co"
+    if snapshot.safe==true and snapshot.native_offset==true and exact_basis
+        and tostring(snapshot.chapter_uid or snapshot.chapterUid or "")~=""
+        and tonumber(snapshot.canonical_offset or snapshot.chapter_offset or snapshot.offset)~=nil
+        and tostring(snapshot.source_xpointer or "")~="" then
+        patch.last_exact_position=U.copy(snapshot)
+        patch.last_exact_position.saved_at=os.time()
+        logger.info("[MiuRead][ProgressExactCache] updated",
+            "book=",book_id,"chapter=",tostring(snapshot.chapter_uid or "-"),
+            "co=",tostring(snapshot.canonical_offset or snapshot.chapter_offset or snapshot.offset or "-"))
+    end
+    self.store:save_session(book_id,patch)
 end
 
 function Sync:_recover_auth_once(channel,error,on_done,force)

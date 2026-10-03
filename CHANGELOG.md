@@ -1,3 +1,12 @@
+## 5.9.0-beta.13 - Preflight Position Verification & Exact Exit Cache
+
+- 云端较新位置改为跳转前预验证：候选 XPointer 先在后台反算为 `chapterUid + wr_data_co`，通过 exact / content-gated `verified_near` 后才执行一次可见跳转；预验证失败保持当前页，不再自动“跳过去再 rollback”。
+- 本地→微信 source 映射保留长匹配优先；长 anchor `not_found/ambiguous` 后增加边界短 anchor 的唯一匹配 recovery。云端→本地文本搜索也在 56 字符 anchor 失败后按 40/28/18 字符前缀有界降级，仍限定目标章节并由最终 `chapter/co` 预验证兜底；补充 `[ProgressSourceRecovery]` 诊断，严格 exact co 容差不放宽。
+- 修复 late-remote 竞态：预验证期间不再屏蔽真实用户翻页；用户已经开始阅读后，即使云端候选随后验证成功，本轮也不会自动抢占当前位置。
+- 阅读过程中在页面稳定后异步缓存最近一次可信 `chapter/co + source_xpointer`；退出时即时 resolver 失败且 XPointer 完全一致时复用该缓存，继续走现有 pending/upload/cloud-verify 流程。
+- 微信服务器 raw percent 明确作为 protocol metadata；beta.13 新的候选跳转只使用 canonical progress，权威同步仍以 `chapterUid + wr_data_co` 为准。
+- 保留 beta.12 的失败 source cache 强制刷新、KOReader 子进程完成确认、单 writer、安全 fence 与云端回读验证；Schema 保持 136。
+
 ## 5.9.0-beta.12 - Exact Source Refresh & Writer Completion Fix
 
 - 修复精确位置 recovery 的“假网络刷新”：本地 exact/legacy source cache 已经无法定位 anchor 时，network recovery 会显式绕过旧缓存并重新获取当前章节 `coord_html`，成功后覆盖 exact cache；若新源仍无法定位则继续 fail closed，不上传近似位置。

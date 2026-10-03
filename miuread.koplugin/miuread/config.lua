@@ -1,6 +1,6 @@
 local C = {
     NAME = "觅阅 · 微信读书助手",
-    VERSION = "5.9.0-beta.12",
+    VERSION = "5.9.0-beta.13",
     SCHEMA = 136,
     MIN_SUPPORTED_SCHEMA = 113,
     PLUGIN_DIR = "miuread.koplugin",
@@ -138,6 +138,12 @@ local C = {
     OPEN_SYNC_HARD_TIMEOUT_SECONDS = 8,
     LATE_REMOTE_APPLY_WINDOW_SECONDS = 15,
     OPEN_SYNC_READ_DEBOUNCE_SECONDS = 60,
+    -- beta.13: strict co matching remains unchanged. A wider near-window is
+    -- accepted only after a content/cached XPointer has been independently
+    -- preflighted against the source coordinate.
+    REMOTE_VERIFIED_NEAR_CO_MAX = 256,
+    REMOTE_VERIFIED_NEAR_PROGRESS_MAX = 0.25,
+    LAST_EXACT_POSITION_REFRESH_DELAY_SECONDS = 1.4,
     -- beta.7: 120s was too conservative on real devices. It turned a clearly
     -- newer cloud chapter into an ambiguous conflict and made open-sync look
     -- like it had silently stalled. Keep a small device/server skew guard, but
