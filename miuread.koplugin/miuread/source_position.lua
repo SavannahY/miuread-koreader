@@ -144,29 +144,39 @@ local function fetch_coord_html(reader, record, anchor, options)
     local version = tonumber(anchor.book_version or book.version or book.bookVersion
         or (record.record and (record.record.book_version or record.record.bookVersion))) or 0
     local paths = cache_paths(reader, book.book_id or book.bookId, uid, version)
-    for _, path in ipairs(paths) do
-        local cached = read_cached(path)
-        if cached then
-            return cached, true, nil, {kind="exact", path=path, version=version}
-        end
-    end
-
+    local refresh_uid = tostring(options.force_refresh_uid or "")
+    local force_refresh = options.force_refresh == true and (refresh_uid == "" or refresh_uid == uid)
     local legacy_seen, legacy_error = false, nil
-    if U.trim(tostring(anchor.anchor_text or "")) ~= "" then
-        for _, candidate in ipairs(legacy_cache_candidates(reader, book.book_id or book.bookId, uid, version)) do
-            local cached = read_cached(candidate.path)
+    if not force_refresh then
+        for _, path in ipairs(paths) do
+            local cached = read_cached(path)
             if cached then
-                legacy_seen = true
-                local map, verify_error = validate_anchor_source(cached, anchor)
-                if map then
-                    return cached, true, nil, {
-                        kind="legacy_verified", path=candidate.path, version=version,
-                        prebuilt_map=map,
-                    }
-                end
-                legacy_error = legacy_error or verify_error
+                return cached, true, nil, {kind="exact", path=path, version=version}
             end
         end
+
+        if U.trim(tostring(anchor.anchor_text or "")) ~= "" then
+            for _, candidate in ipairs(legacy_cache_candidates(reader, book.book_id or book.bookId, uid, version)) do
+                local cached = read_cached(candidate.path)
+                if cached then
+                    legacy_seen = true
+                    local map, verify_error = validate_anchor_source(cached, anchor)
+                    if map then
+                        return cached, true, nil, {
+                            kind="legacy_verified", path=candidate.path, version=version,
+                            prebuilt_map=map,
+                        }
+                    end
+                    legacy_error = legacy_error or verify_error
+                end
+            end
+        end
+    else
+        logger.info("[MiuRead][ProgressSourceDiagnostic]",
+            "stage=cache_bypass",
+            "book=", tostring(book.book_id or book.bookId or ""),
+            "chapter=", uid,
+            "reason=force_source_refresh")
     end
 
     if options.cache_only == true then

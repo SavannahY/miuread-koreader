@@ -1536,7 +1536,7 @@ function Sync:_source_position_async(callback, options)
     launch_network=function()
         if self.async:busy() then return false,"source_worker_busy" end
         return self.async:run("progress_source_position_network", function()
-            local value,source_error=SourcePosition.locate(reader, record_snapshot, anchor,{cache_only=false})
+            local value,source_error=SourcePosition.locate(reader, record_snapshot, anchor,{cache_only=false,force_refresh=true,force_refresh_uid=tostring(anchor.chapter_uid or "")})
             return {position=value,error=source_error}
         end,function(result) on_phase_result("network",result) end,
             tonumber(Config.PROGRESS_SOURCE_NETWORK_TIMEOUT_SECONDS) or 40)
@@ -3614,6 +3614,16 @@ local function process_alive(pid)
     return ok and result == 0
 end
 
+-- beta.12: `kill(pid, 0)` can still report a child that has exited but has not
+-- yet been reaped. For KOReader subprocesses, consult the runtime's own child
+-- completion API before treating that PID as a live competing writer.
+local function subprocess_done(pid)
+    pid=tonumber(pid)
+    if not pid or pid<=1 or type(FFIUtil.isSubProcessDone)~="function" then return false end
+    local ok,done=pcall(FFIUtil.isSubProcessDone,pid,false)
+    return ok and done==true
+end
+
 local function signal_process(pid,signal)
     pid=tonumber(pid); signal=tonumber(signal) or 15
     if not pid or pid<=1 then return false end
@@ -5154,13 +5164,18 @@ function Sync:preempt_reading_time_for_progress(reason, callback)
     self.progress_hold=false
     self.state="stopped"
 
-    if not daemon or not process_alive(daemon.pid) then
+    if not daemon then
         self.daemon=nil
         callback(true,{state="no_active_time_writer"})
         return true
     end
 
     local pid=tonumber(daemon.pid)
+    if not pid or subprocess_done(pid) or not process_alive(pid) then
+        self.daemon=nil
+        callback(true,{state="no_active_time_writer"})
+        return true
+    end
     local paths=daemon.paths
     if paths and paths.stop then pcall(U.atomic_write,paths.stop,"1",true) end
     if pid then pcall(signal_process,pid,15) end
@@ -5177,7 +5192,7 @@ function Sync:preempt_reading_time_for_progress(reason, callback)
     end
     local function poll()
         polls=polls+1
-        if not pid or not process_alive(pid) then
+        if not pid or subprocess_done(pid) or not process_alive(pid) then
             finish(true,hard_killed and "time_writer_killed" or "time_writer_preempted")
             return
         end

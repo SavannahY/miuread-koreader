@@ -1,1 +1,1 @@
-5.9.0-beta.11：统一主页/二级菜单手动 progress recovery，并在唤醒后等待真正 online-ready 再执行进度 reconcile；保留 beta.10 翻译与 Release 修复，不改 time-writer ownership，Schema 136。
+5.9.0-beta.12：精确位置 network recovery 失败后强制绕过旧 source cache 重新获取章节源，并用 KOReader 子进程完成状态修复 time-writer 抢占误超时；保留 beta.11 统一同步入口与 online-ready gate，Schema 136。

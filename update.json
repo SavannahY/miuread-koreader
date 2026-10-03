@@ -1,17 +1,17 @@
 {
-  "version": "5.9.0-beta.11",
-  "name": "觅阅 · 微信读书助手 5.9.0-beta.11 内测版",
+  "version": "5.9.0-beta.12",
+  "name": "觅阅 · 微信读书助手 5.9.0-beta.12 内测版",
   "channel": "beta",
   "package_type": "full",
-  "package_url": "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.11/miuread-v5.9.0-beta.11-full.zip",
+  "package_url": "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.12/miuread-v5.9.0-beta.12-full.zip",
   "package_urls": [
-    "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.11/miuread-v5.9.0-beta.11-full.zip",
-    "https://ghfast.top/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.11/miuread-v5.9.0-beta.11-full.zip",
-    "https://gh-proxy.com/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.11/miuread-v5.9.0-beta.11-full.zip",
-    "https://ghproxy.net/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.11/miuread-v5.9.0-beta.11-full.zip"
+    "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.12/miuread-v5.9.0-beta.12-full.zip",
+    "https://ghfast.top/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.12/miuread-v5.9.0-beta.12-full.zip",
+    "https://gh-proxy.com/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.12/miuread-v5.9.0-beta.12-full.zip",
+    "https://ghproxy.net/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.12/miuread-v5.9.0-beta.12-full.zip"
   ],
-  "size": 2024303,
-  "sha256": "ef0ee0ebbca44a3a021811dea4d48fac8bdfd3834db852c53dc1bdb5db3011d1",
-  "summary": "统一主页与二级菜单的手动 progress recovery；唤醒后等待 online-ready 再执行进度 reconcile。保留 beta.10 翻译/Release 修复，不修改 time-writer ownership。",
-  "notes": "统一主页与二级菜单的手动 progress recovery；唤醒后等待 online-ready 再执行进度 reconcile。保留 beta.10 翻译/Release 修复，不修改 time-writer ownership。"
+  "size": 2037522,
+  "sha256": "3ebca05af4b83bc81d2f5e67763712a5f0916112e4bf8a074e3f3da3ce779144",
+  "summary": "精确位置 recovery 在旧 source cache 失效后真正刷新章节源；reading-time writer 抢占使用 KOReader 子进程完成状态减少误超时。",
+  "notes": "修复 source_anchor_not_found 场景下 network recovery 重复读取失败 exact cache 的问题，并减少已退出 reading-time writer 被误判存活导致的 time_writer_preempt_timeout。保留 beta.11 同步入口、online-ready gate 与 fail-closed 安全策略。"
 }
