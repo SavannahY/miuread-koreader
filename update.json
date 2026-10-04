@@ -1,17 +1,17 @@
 {
-  "version": "5.9.0-beta.14",
-  "name": "觅阅 · 微信读书助手 5.9.0-beta.14 内测版",
+  "version": "5.9.0-beta.19",
+  "name": "觅阅 · 微信读书助手 5.9.0-beta.19 内测版",
   "channel": "beta",
   "package_type": "full",
-  "package_url": "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.14/miuread-v5.9.0-beta.14-full.zip",
+  "package_url": "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.19/miuread-v5.9.0-beta.19-full.zip",
   "package_urls": [
-    "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.14/miuread-v5.9.0-beta.14-full.zip",
-    "https://ghfast.top/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.14/miuread-v5.9.0-beta.14-full.zip",
-    "https://gh-proxy.com/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.14/miuread-v5.9.0-beta.14-full.zip",
-    "https://ghproxy.net/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.14/miuread-v5.9.0-beta.14-full.zip"
+    "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.19/miuread-v5.9.0-beta.19-full.zip",
+    "https://ghfast.top/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.19/miuread-v5.9.0-beta.19-full.zip",
+    "https://gh-proxy.com/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.19/miuread-v5.9.0-beta.19-full.zip",
+    "https://ghproxy.net/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0-beta.19/miuread-v5.9.0-beta.19-full.zip"
   ],
-  "size": 2026669,
-  "sha256": "b2bfef3a214d05f7aaed5e132934f47797fcc3ce0028a474dfc1b27fabc1d5e8",
-  "summary": "恢复真机已验证的云端定位 rescue，错误章节才回滚；退出先保存独立本地显示进度，未知进度不再显示 0%。",
-  "notes": "以 beta.12 为稳定基线，撤销 beta.13 跳转前 preflight 与主动 idle exact-cache。保留严格 exact 校验、text-anchor rescue、source force-refresh 和 writer completion；同章 co 未确认时不再自动跳回，也不会把近似坐标写回云端。退出时 local_display_progress 与微信 exact 坐标解耦，source_anchor_not_found 不再使主页回退为 0%。"
+  "size": 2035252,
+  "sha256": "ccd27c934f7ec8cfed3094fe622cb39b593d28e81662241bdbb80a56bd62d7a9",
+  "summary": "本地→云端新增双向 24/16/12 多级唯一正文锚点与 source-only 格式归一化；云端→本地正文唯一命中后不再提示“精确位置未确认”，内部写入安全规则保持不变。",
+  "notes": "beta.19 针对 source_anchor_not_found 增加 forward/backward 24/16/12 exact anchors、有限标题/邻章 recovery 与 progress-source 专用 NBSP/零宽/soft-hyphen 等格式字符忽略；多个锚点导出不同 native co 时继续 fail closed。保留 beta.18 fresh_context。云端 text_anchor_xpointer 唯一命中后视为可靠导航落点，不再用 percent correction 覆盖，也不向用户暴露反向 co 验证细节；remote_exact_unresolved write fence、ReadReport v30 与 exact cloud readback 保持不变。"
 }

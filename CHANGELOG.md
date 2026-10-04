@@ -1,3 +1,49 @@
+## 5.9.0-beta.19 - Robust Local Mapping & Quiet Position Sync
+
+- 本地→微信精确进度换算从单一 `forward_24` 扩展为同一 XPointer 的双向多级 exact anchors：`forward/backward 24 -> 16 -> 12`；短锚点仍必须在微信坐标源中唯一确定，多个成功锚点若导出不同 native `wr_data_co` 则 fail closed，不猜坐标。
+- `PrecisePosition.capture()` 同时保存多组 immutable source anchors；章节 recovery 在原有限邻章基础上加入本地 TOC 标题的 exact-title 候选，但候选只有通过正文 exact anchor 才能被采用。
+- 新增 progress-source 专用 `PosMap.locateSource()`：只额外忽略 NBSP、零宽字符、soft-hyphen、BOM/word-joiner 等无可见语义格式字符；不做编辑距离、大小写模糊、标点折叠或百分比近似，annotation 定位逻辑保持原样。
+- 保留 beta.18 `fresh_context=true` 作为缓存失败后的第二阶段 recovery：exact cache -> 多锚点 -> fresh Web Reader source -> 多锚点 -> 有限章节候选；最终仍只有 native chapter/co 才允许上传。
+- 云端→本地的 `text_anchor_xpointer` 唯一命中现在视为可靠导航落点：即使反向 local->wr_data_co 验证暂未完成，也不再向用户显示“精确章节内位置暂未确认”，并停止后续 percent correction 破坏已成功的正文落点；内部 exact write fence 继续保留。
+- 真正只到章节附近、没有唯一正文锚点时仍会提示“已定位到云端章节附近”；错误章节继续 rollback。ReadReport v30、ghost-write guard、progress epoch/conflict lifecycle 与 exact cloud readback 全部保持不变。Schema 136。
+
+## 5.9.0-beta.18 - Fresh Progress Source Context
+
+- 修复本地→微信精确进度换算仍可能使用 beta.23+ 240 秒 book-scoped Reader context/psvts 的问题：progress source mapping 的网络源获取现在强制 `fresh_context=true`，针对目标 `chapterUid` 重新生成 Web Reader page/context 后再取得 `coord_html`。
+- 普通整本下载、章节预取与阅读继续保留 Reader context 复用，不回退 beta.23 的下载性能优化；fresh context 仅隔离到精确 progress source mapping。
+- `Reader:_chapter_once()`、`_epub_once()` 与 `_txt_once()` 统一识别 `opt.fresh_context`，避免 EPUB/TXT fallback 或内部直调绕回旧 context。
+- `ProgressSourceDiagnostic stage=network_fetch` 新增 `reader_context=fresh`，下一份 crash 可直接确认精确换算是否实际走了 fresh context。
+- 不修改 `forward_24`、`PosMap.locate()`、`wr_co`、exact-co 容差、progress submit/verify 或云端→本地定位；fresh source 后仍找不到唯一 anchor 时继续 fail closed。
+- 完整保留 beta.17 progress epoch / conflict lifecycle、beta.16 clean-state 与 ReadReport v30 fresh-GET-before-POST。Schema 保持 136。
+
+## 5.9.0-beta.17 - Progress Failure Lifecycle & Conflict Resolution
+
+- 修复 beta.16 clean reset 的跨 Store 漏洞：`progress_epoch` 现在高于 sequence/rank/timestamp；新 generation 可强制旧 Home/Reader Store 接受“pending 已删除”，杜绝 reset 后旧事务重新写回。
+- 首次启动执行一次 beta.17 progress-control reset，清理已被 beta.16 旧 Store 复活的 pending；额外清除 `pending_unresolved_position` 与 `local_read_event_at` 等同步控制元数据，保留本机实际阅读页和 `local_display_progress`。
+- `ambiguous_clock_conflict` 等 authority conflict 不再进入 Home 自动 retry / 全部重新同步的发送或重提交流程，避免“继续上传→冲突→失败记录仍在”的死循环。
+- 进度失败详情新增“以云端为准”：先 fresh GET 云端，成功后递增 epoch、清掉本地 pending/retry，再把刚读取的云端坐标作为新 baseline；GET 失败则完全不删除本地事务。
+- 新增“以本机为准”：只有仍属于当前 epoch 的可重放精确 `chapter/co` 才可显式 force-write，并继续使用 exact chapter/co readback 验证。
+- 无可安全重放坐标的纯失效记录可“清除失效记录”，只删除本地同步事务，不写微信云端。
+- ReadReport 保持 v30 与 fresh-GET-before-POST；text-anchor/source mapping/定位容差均不改。Schema 保持 136。
+
+## 5.9.0-beta.16 - Clean Sync State & Ghost-Write Guard
+
+- 首次启动执行一次性 `progress_state_reset_beta16`：对每本书递增 `progress_epoch`，清除历史 `cloud_anchor / remote_wire_anchor / remote / position_state / local_position_snapshot / pending_progress / progress transaction / verified sequence / report context` 等同步控制面状态；保留登录、书架/下载、本机真实阅读页、批注、最近阅读、阅读时间历史与 `local_display_progress`。
+- 5.9 beta.4–15 一直共用 Schema 136，降级不会自动清理进度状态；本版用独立 marker 执行 clean-state migration，避免旧版本留下的 anchor/pending 在新代码中继续参与同步。
+- `ReadReport` service version 升至 30，启动时淘汰 v1–29 旧 worker/control；v30 daemon control 不再序列化任何 `cloud_anchor_*` 字段，只保留 beta.15 的 `remote_wire_*` 通道。
+- 保留 beta.15 的硬规则：每次 `reading_time_compat` POST 前 worker 都先 GET 当前微信位置并原样回显；GET 失败则不 POST。因此历史 CloudAnchor 即使仍存在于旧文件，也不能再次把服务器位置写回。
+- “重置本书同步状态”改为调用同一套完整 reset，除了旧事务外同时清理 stale remote/CloudAnchor/report-context，并通过 `progress_epoch` 使旧事务失效。
+- 不修改 beta.15 的 progress writer、beta.14 的同章 soft mismatch、beta.12 source refresh，也不改变 exact-co 容差或 text-anchor 算法。Schema 仍为 136。
+
+## 5.9.0-beta.15 - Cloud Position Integrity & Exact-Sync Diagnostics
+
+- 新增 `remote_wire_anchor`，每次成功 GET 微信阅读位置都立即保存原始 `chapterUid + chapterOffset + protocol progress`；该值不依赖本地 canonical progress，也不被 pending local progress 阻挡。
+- ReadingTime/ReadReport 的 `reading_time_compat` 不再读取 `cloud_anchor()`：后台时长上报在每次写入前都由隔离 worker 重新 GET 当前服务器位置，并只回显该次 fresh remote wire anchor；GET 失败则本轮不 POST。pending、本地 exact、旧 verified CloudAnchor 均不能进入时长上报的 `ci/co/pr`。
+- ReadReport daemon control 新增 `remote_wire_*` 字段并将 service version 升至 29，升级后不会复用旧 beta.14 worker/control 语义。
+- SAFE 阅读时间手动重试同样只使用 remote wire anchor；若本地没有缓存，则 worker 先刷新服务器位置，不再因旧 CloudAnchor 继续写旧坐标。
+- `text_anchor_rescue()` 改为标准 CREngine 搜索调用优先、兼容调用 fallback；诊断明确区分 `call_failed / invalid_return / zero_hits / hits_outside_chapter / multiple_hits / unique_hit`，记录 query hash、长度、UTF-8 合法性与真实 pcall error，但不记录正文。
+- 不修改 beta.14 progress writer、rollback/soft-mismatch、source mapping 或 co 容差；严格 `remote_exact_unresolved` write fence 与 beta.12 source refresh / subprocess completion 保持不变。Schema 136。
+
 ## 5.9.0-beta.14 - Progress Sync Stabilization
 
 - 以 beta.12 为代码基线，撤销 beta.13 的跳转前精确 preflight 与主动 idle exact-cache 设计；恢复已经在真机验证有效的“近似落点 → exact verify → text-anchor rescue → 再验证”主链。
