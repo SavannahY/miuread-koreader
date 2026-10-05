@@ -162,7 +162,9 @@ function Thoughts.parse_href(href)
     if not b then return nil end
     local book_id, chapter_uid, range = hex_decode(b), hex_decode(c), hex_decode(r)
     if not book_id or not chapter_uid or not range then return nil end
-    return {book_id = book_id, chapter_uid = chapter_uid, range = range, anchor = anchor}
+    local on_demand=range:sub(1,9)=="ondemand:"
+    if on_demand then range=range:sub(10) end
+    return {book_id = book_id, chapter_uid = chapter_uid, range = range, anchor = anchor, on_demand=on_demand}
 end
 
 local function legacy_cache_path(store, book_id, chapter_uid)

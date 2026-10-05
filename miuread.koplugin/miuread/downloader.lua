@@ -378,7 +378,7 @@ end
 
 local function option_key(opt)
     return table.concat({
-        opt.annotations and "notes" or "clean",
+        opt.on_demand_thoughts and "ondemand" or (opt.annotations and "notes" or "clean"),
         opt.images == false and "no-images" or "images",
         opt.chapter_uid and ("chapter-" .. U.id_name(opt.chapter_uid))
             or ((opt.range_start_index and opt.range_end_index) and "range" or "book"),
@@ -455,7 +455,7 @@ local function cache_new(store, book, opt, selected, format)
             title_transform_version = inherited_title_version or TITLE_TRANSFORM_VERSION,
             image_transform_version = IMAGE_TRANSFORM_VERSION,
             repair_options = {
-                annotations=opt.annotations==true, images=opt.images~=false, chapter_uid=opt.chapter_uid,
+                annotations=opt.annotations==true, on_demand_thoughts=opt.on_demand_thoughts==true or nil, images=opt.images~=false, chapter_uid=opt.chapter_uid,
                 range_start_index=opt.range_start_index, range_end_index=opt.range_end_index,
                 range_start_title=opt.range_start_title, range_end_title=opt.range_end_title,
             },
@@ -480,7 +480,7 @@ local function cache_new(store, book, opt, selected, format)
             manifest.image_transform_version=1
         end
         manifest.repair_options = {
-            annotations=opt.annotations==true, images=opt.images~=false, chapter_uid=opt.chapter_uid,
+            annotations=opt.annotations==true, on_demand_thoughts=opt.on_demand_thoughts==true or nil, images=opt.images~=false, chapter_uid=opt.chapter_uid,
             range_start_index=opt.range_start_index, range_end_index=opt.range_end_index,
             range_start_title=opt.range_start_title, range_end_title=opt.range_end_title,
         }
@@ -846,7 +846,7 @@ function Downloader:_save(book, chapters, assets, css, cover, opt, failures, ses
     end
     if #chapters<=0 then error("EPUB 至少需要一个说明页面") end
 
-    local suffix = kind == "notes" and "划线与想法版" or "纯净版"
+    local suffix = opt.on_demand_thoughts and "划线版·想法按需" or (kind == "notes" and "划线与想法版" or "纯净版")
     local standalone = opt.chapter_uid ~= nil
     local hidden_prefetch = standalone and opt.prefetch_hidden == true
     local dir = hidden_prefetch and self.store:prefetch_root(book.bookId) or self.store:epub_root()
@@ -860,6 +860,9 @@ function Downloader:_save(book, chapters, assets, css, cover, opt, failures, ses
             or self.store:chapter_variant(book.bookId,opt.chapter_uid,storage_kind)
     else existing_record=self.store:variant(book.bookId,storage_kind) end
 
+    if existing_record and (existing_record.on_demand_thoughts==true)~=(opt.on_demand_thoughts==true) then
+        existing_record=nil -- Preserve the other edition's file and sidecar.
+    end
     local chapter_name = standalone and (" - " .. U.safe_name(chapters[1] and chapters[1].title or "章节")) or ""
     local range_name = partial_range and "【章节版】" or ""
     local preview_name=""
@@ -1022,6 +1025,7 @@ function Downloader:_save(book, chapters, assets, css, cover, opt, failures, ses
         preview_mode=access_scope=="preview" and preview_mode or nil,
         failed_count=tonumber(opt.failed_chapter_count) or #(failures or {}),
         guard_chapter_uid=opt.guard_chapter_uid or (chapters[#chapters] and chapters[#chapters].uid),
+        on_demand_thoughts=opt.on_demand_thoughts==true or nil,
         annotation_requested=opt.annotation_requested==true or opt.annotations==true,
         annotation_pending=opt.annotation_pending==true or nil,
         annotation_fallback=opt.annotation_fallback==true or nil,
@@ -1152,6 +1156,7 @@ function Downloader:_save(book, chapters, assets, css, cover, opt, failures, ses
         pending_install=defer_install or nil,
         pending_file=pending_path,
         translation_mode=opt.generate_translation_uid and opt.translation_mode or nil,
+        on_demand_thoughts=opt.on_demand_thoughts==true or nil,
         annotation_requested=opt.annotation_requested==true or opt.annotations==true,
         annotation_pending=opt.annotation_pending==true or nil,
         annotation_fallback=opt.annotation_fallback==true or nil,
@@ -1541,7 +1546,7 @@ function Downloader:_book_once(input, opt, progress)
                     respect_reader_priority("annotation_batch")
                     if report_progress then report_progress(stage,current_index,total) end
                 end,
-                {previous=previous,checkpoint=persist_checkpoint})
+                {previous=previous,checkpoint=persist_checkpoint,on_demand=opt.on_demand_thoughts==true or nil})
         end
 
         local ok,current=pcall(fetch_once)
@@ -1622,7 +1627,7 @@ function Downloader:_book_once(input, opt, progress)
             annotation_error_kind=current.error_kind or "incomplete"
         end
 
-        if type(merged.review_groups)=="table" then
+        if merged.on_demand~=true and type(merged.review_groups)=="table" then
             Thoughts.save(self.store,book.bookId,chapter.chapterUid or chapter.uid,merged.review_groups)
         end
         return merged

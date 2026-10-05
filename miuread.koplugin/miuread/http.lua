@@ -31,6 +31,21 @@ local function is_weread_url(url)
     return host == "weread.qq.com" or host:sub(-#".weread.qq.com") == ".weread.qq.com"
 end
 
+local function request_rate_limit_scope(opt)
+    local scope=tostring(opt.rate_limit_scope or "global")
+    if is_weread_url(opt.url) then return scope end
+    -- Third-party metadata/download services must never throttle WeRead.
+    -- Keep caller scopes, but namespace them under the external origin.
+    local scheme,host=tostring(opt.url or ""):lower():match("^(https?)://([^/?#]+)")
+    scheme=scheme or "unknown"
+    host=tostring(host or "unknown"):gsub("^.-@","")
+    if scheme=="https" then host=host:gsub(":443$","")
+    elseif scheme=="http" then host=host:gsub(":80$","") end
+    -- Encode punctuation rather than collapsing distinct hostnames together.
+    host=host:gsub("[^%w%-]",function(c) return string.format("_%02x",string.byte(c)) end)
+    return "external-"..scheme.."-"..host.."-"..scope
+end
+
 local function is_weread_api_url(url)
     url = tostring(url or "")
     if not is_weread_url(url) then return false end
@@ -662,10 +677,28 @@ function Http:_shared_rate_limit(scope)
     local path=self:_rate_limit_path(scope)
     if path=="" then return 0,nil end
     local raw=Util.read_file(path,true)
+    if not raw and tostring(scope or ""):match("^external%-") then
+        -- Read old global cooldowns only for the service that created them.
+        -- Do not delete/rewrite the shared file: another worker may use it.
+        local legacy=Util.read_file(self:_rate_limit_path("global"),true)
+        if legacy then
+            local good,old=pcall(Json.decode,legacy)
+            if good and type(old)=="table" and type(old.source)=="string"
+                and old.source:match("^https?://") and not is_weread_url(old.source)
+                and request_rate_limit_scope{url=old.source,rate_limit_scope=old.scope}==scope then
+                raw=legacy
+            end
+        end
+    end
     if not raw then return 0,nil end
     local ok,state=pcall(Json.decode,raw)
     if not ok or type(state)~="table" then
         os.remove(path)
+        return 0,nil
+    end
+    if tostring(scope or "global")=="global" and type(state.source)=="string"
+        and state.source:match("^https?://") and not is_weread_url(state.source) then
+        -- A pre-fix Google/OpenLibrary 429 is not a WeRead rate limit.
         return 0,nil
     end
     local until_at=tonumber(state.until_at or 0) or 0
@@ -897,6 +930,10 @@ function Http:_request_once(opt)
             if chunk then
                 if not first_data_at then first_data_at=clock_now() end
                 total_bytes=total_bytes+#chunk
+                if tonumber(opt.max_response_bytes) and total_bytes>tonumber(opt.max_response_bytes) then
+                    stream_error="response exceeds configured size limit"
+                    return nil,stream_error
+                end
                 if stream_file then
                     local wrote,write_error=stream_file:write(chunk)
                     if not wrote then
@@ -1043,7 +1080,7 @@ function Http:request(opt)
         rate_retries = is_weread_api_url(opt.url) and tonumber(self.rate_limit_retries) or 0
     end
     rate_retries = math.max(0, math.min(#RATE_LIMIT_DELAYS, rate_retries))
-    local rate_limit_scope=tostring(opt.rate_limit_scope or "global")
+    local rate_limit_scope=request_rate_limit_scope(opt)
     local shared_remaining,shared_state=self:_shared_rate_limit(rate_limit_scope)
     if shared_remaining>0 then
         local code=shared_state and shared_state.code or "rate_limit"

@@ -142,7 +142,6 @@ function Annotations:fetch_chapter(book_id, uid, progress, options)
     local checkpoint=type(options.checkpoint)=="function" and options.checkpoint or nil
     progress=progress or function() end
 
-    if previous and previous.on_demand~=options.on_demand then previous=nil end
     if previous and previous.complete==true and options.force_refresh~=true then
         previous.cached=true
         return previous
@@ -188,13 +187,6 @@ function Annotations:fetch_chapter(book_id, uid, progress, options)
                 "book=",result.book_id,"chapter=",result.chapter_uid,"count=",tostring(invalid_underlines))
         end
         progress("underlines",result.underline_count,result.underline_count,"")
-    end
-
-    if options.on_demand==true then
-        result.on_demand=true
-        result.review_complete=true -- No review content belongs to this download mode.
-        result.complete=result.underline_request_ok and result.underlines_partial~=true
-        return result
     end
 
     local active_ranges,active_seen={},{ }
@@ -731,7 +723,7 @@ local function intervals(data, visible_count, index, coord_html)
         if a and b and b > a then
             out[#out + 1] = {
                 a=a, b=b, key=key, row=row,
-                thought=data.on_demand==true or #(data.review_map[key] or {}) > 0,
+                thought=#(data.review_map[key] or {}) > 0,
             }
         elseif official_reason ~= "point_range" then
             unresolved_item(row, official_reason or "position")
@@ -762,20 +754,9 @@ local function render_text_token(token, marks, data, anchored)
         active = nil
         thought_link_open = false
     end
-    -- intervals() returns sorted, non-overlapping marks. Locate the first
-    -- possible match once per token, then advance only as text moves forward.
-    local lo, hi = 1, #marks
-    while lo <= hi do
-        local mid = math.floor((lo + hi) / 2)
-        if marks[mid].b <= pos then lo = mid + 1 else hi = mid - 1 end
-    end
-    local mark_index = lo
     for _, unit in ipairs(token.units) do
-        while marks[mark_index] and marks[mark_index].b <= pos do
-            mark_index = mark_index + 1
-        end
-        local mark = marks[mark_index]
-        if mark and pos < mark.a then mark = nil end
+        local mark
+        for _, it in ipairs(marks) do if pos >= it.a and pos < it.b then mark = it; break end end
         if mark ~= active then
             close_active()
             active = mark
@@ -784,7 +765,7 @@ local function render_text_token(token, marks, data, anchored)
                 -- an existing footnote/noteref link, preserve the underline style but
                 -- leave the original link as the only clickable target.
                 if active.thought and not token.inside_anchor then
-                    local href = Thoughts.href(data.book_id, data.chapter_uid, data.on_demand and ("ondemand:"..active.key) or active.key)
+                    local href = Thoughts.href(data.book_id, data.chapter_uid, active.key)
                     out[#out + 1] = '<a class="miu-thought-link" href="' .. href .. '">'
                     thought_link_open = true
                 end
@@ -793,7 +774,7 @@ local function render_text_token(token, marks, data, anchored)
                 local id_attr = ""
                 if active.thought and not anchored[active.key] then
                     anchored[active.key] = true
-                    id_attr = ' id="' .. Thoughts.anchor(data.book_id, data.chapter_uid, data.on_demand and ("ondemand:"..active.key) or active.key) .. '"'
+                    id_attr = ' id="' .. Thoughts.anchor(data.book_id, data.chapter_uid, active.key) .. '"'
                 end
                 out[#out + 1] = '<span' .. id_attr .. ' class="' .. display_class .. ' ' .. mark_class
                     .. '" data-miu-range="' .. active.key .. '">'
@@ -888,7 +869,7 @@ function Annotations:to_cache(data)
     local underlines={}
     for _,row in ipairs(data.underlines or {}) do underlines[#underlines+1]=safe_scalar_copy(row,CACHE_UNDERLINE_FIELDS) end
     return {
-        schema=1,on_demand=data.on_demand==true or nil,book_id=str(data.book_id),chapter_uid=str(data.chapter_uid),underlines=underlines,
+        schema=1,book_id=str(data.book_id),chapter_uid=str(data.chapter_uid),underlines=underlines,
         review_groups=cached_groups(data.review_groups),completed_ranges=data.completed_ranges or {},
         pending_ranges=data.pending_ranges or {},underline_request_ok=data.underline_request_ok==true,
         underlines_partial=data.underlines_partial==true,review_complete=data.review_complete==true,
@@ -906,7 +887,7 @@ function Annotations:from_cache(value)
     end
     local underlines={}
     for _,row in ipairs(value.underlines or {}) do underlines[#underlines+1]=safe_scalar_copy(row,CACHE_UNDERLINE_FIELDS) end
-    return {on_demand=value.on_demand==true or nil,book_id=str(value.book_id),chapter_uid=str(value.chapter_uid),underlines=underlines,
+    return {book_id=str(value.book_id),chapter_uid=str(value.chapter_uid),underlines=underlines,
         review_map=map,review_groups=groups,underline_count=#underlines,thought_count=group_count,
         thought_entry_count=entry_count,errors={},completed_ranges=value.completed_ranges or {},
         pending_ranges=value.pending_ranges or {},underline_request_ok=value.underline_request_ok==true,
@@ -958,12 +939,6 @@ end
 function Annotations:merge(previous,current)
     previous=type(previous)=="table" and previous or nil
     current=type(current)=="table" and current or {}
-    if current.on_demand==true then
-        current.review_map={}; current.review_groups={}
-        current.thought_count=0; current.thought_entry_count=0
-        return current
-    end
-    if previous and previous.on_demand~=current.on_demand then previous=nil end
     if current.underline_request_ok~=true then
         if previous then
             previous.errors=current.errors or {}

@@ -1,0 +1,20 @@
+name: Voyage fork regressions
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline-regressions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Lua 5.1
+        run: sudo apt-get update && sudo apt-get install -y lua5.1
+      - name: Parse plugin and run offline regressions
+        run: python3 tools/voyage/run_tests.py --lua lua5.1
+      - name: Build installable source package
+        run: python3 tools/build_voyage_package.py

@@ -4923,7 +4923,8 @@ function Plugin:_home_complete_refresh(confirmed)
     HOME_SESSION.recent_read_dirty=true
     self:_home_schedule_device_state_probe(.05)
     self:toast("正在完整更新书架与书籍信息…",3)
-    self:_home_refresh_remote(true,false)
+    -- An explicit refresh must survive the tap/gesture that requested it.
+    self:_home_refresh_remote(true,true)
     self:_home_scan_local(true)
     self:_home_relink_generated_files(true)
     UIManager:scheduleIn(.35,function()
@@ -9714,6 +9715,9 @@ function Plugin:_home_hold_book(book,anchor)
     local notes_context=self:_home_variant_download_context(id,true,download_state,repairs)
     actions[#actions+1]=self:_home_variant_download_action(target,false,clean_context)
     actions[#actions+1]=self:_home_variant_download_action(target,true,notes_context)
+    actions[#actions+1]={icon="highlight",label="正文＋划线，想法按需加载",
+        detail="只下载划线位置；点开后每批读取 5 条想法",
+        callback=function() self:choose_download_mode(target,{annotations=true,on_demand_thoughts=true},false) end}
 
     local same_download=tostring(download_state.book_id or download_state.bookId or "")==id
     local task_options=same_download and self:_home_download_task_options(download_state) or nil
@@ -18591,14 +18595,15 @@ function Plugin:choose_download_mode(b,opt,open_after)
 end
 function Plugin:choose_download(b,limit,open_after,uid)
     local dialog
-    local function choose_version(annotations)
+    local function choose_version(annotations,on_demand)
         UIManager:close(dialog)
-        self:choose_download_mode(b,{annotations=annotations,limit=limit,chapter_uid=uid},open_after)
+        self:choose_download_mode(b,{annotations=annotations,on_demand_thoughts=on_demand,limit=limit,chapter_uid=uid},open_after)
     end
     dialog=ButtonDialog:new{
         title="下载《"..tostring(b.title or "未命名").."》",title_align="center",
         buttons={
             {{text="纯净版",callback=function() choose_version(false) end}},
+            {{text="正文＋划线，想法按需加载",callback=function() choose_version(true,true) end}},
             {{text="划线与想法版",callback=function() choose_version(true) end}},
             {{text="取消",callback=function() UIManager:close(dialog) end}},
         },
@@ -19579,7 +19584,7 @@ end
 
 function Plugin:_download_job_key(book,opt)
     opt=opt or {}
-    local kind=opt.annotations and "notes" or "clean"
+    local kind=opt.on_demand_thoughts and "ondemand" or (opt.annotations and "notes" or "clean")
     return table.concat({
         tostring(book and book.bookId or ""),kind,tostring(opt.chapter_uid or "full"),
         tostring(opt.limit or "all"),tostring(opt.range_start_index or ""),
@@ -19811,13 +19816,13 @@ function Plugin:show_range_extend_options(b,annotations,record)
             local target=math.min(#rows,last+count)
             items[#items+1]={text="追加后续 "..tostring(math.max(0,target-last)).." 章",enabled=target>last,
                 callback=function()
-                    self:choose_download_mode(b,{annotations=annotations,range_start_index=first,range_end_index=target,
+                    self:choose_download_mode(b,{annotations=annotations,on_demand_thoughts=record.on_demand_thoughts,range_start_index=first,range_end_index=target,
                         range_start_title=rows[first] and rows[first].title,range_end_title=rows[target] and rows[target].title},false)
                 end}
         end
         items[#items+1]={text="扩展到指定章节",enabled=last<#rows,callback=function()
             self:_chapter_list_menu(b,rows,"选择新的结束章节",function(target)
-                self:choose_download_mode(b,{annotations=annotations,range_start_index=first,range_end_index=target,
+                self:choose_download_mode(b,{annotations=annotations,on_demand_thoughts=record.on_demand_thoughts,range_start_index=first,range_end_index=target,
                     range_start_title=rows[first] and rows[first].title,range_end_title=rows[target] and rows[target].title},false)
             end,last+1)
         end}
@@ -20134,6 +20139,9 @@ function Plugin:_chapter_prefetch_context()
         end
         prefetched=nil
     end
+    local lazy=ctx.record and ctx.record.on_demand_thoughts==true or false
+    if existing and (existing.on_demand_thoughts==true)~=lazy then existing=nil end
+    if prefetched and (prefetched.on_demand_thoughts==true)~=lazy then prefetched=nil end
     ctx.existing=existing
     ctx.prefetched=prefetched
     return ctx,nil,ctx
@@ -20155,6 +20163,8 @@ end
 function Plugin:_promote_hidden_prefetch(ctx)
     if type(ctx)~="table" then return nil,"context_missing" end
     local formal=self.store:chapter_variant(ctx.book_id,ctx.next_uid,ctx.kind)
+    local lazy=ctx.record and ctx.record.on_demand_thoughts==true or false
+    if formal and (formal.on_demand_thoughts==true)~=lazy then formal=nil end
     if formal and formal.file and U.file_exists(formal.file) then
         if type(self.store.forget_hidden_prefetch)=="function" then
             self.store:forget_hidden_prefetch(ctx.book_id,ctx.next_uid,ctx.kind,true)
@@ -20164,6 +20174,7 @@ function Plugin:_promote_hidden_prefetch(ctx)
     local rec=ctx.prefetched or (type(self.store.hidden_prefetch_record)=="function"
         and self.store:hidden_prefetch_record(ctx.book_id,ctx.next_uid,ctx.kind) or nil)
     if type(rec)~="table" or not (rec.file and U.file_exists(rec.file)) then return nil,"prefetch_missing" end
+    if (rec.on_demand_thoughts==true)~=lazy then return nil,"prefetch_mode_mismatch" end
     local target=tostring(rec.promote_target or "")
     if target=="" then
         local filename=tostring(rec.promote_filename or "")
@@ -20347,7 +20358,7 @@ function Plugin:_schedule_chapter_prefetch(session,delay)
             "current=",ctx.current_uid,"next=",ctx.next_uid,"variant=",ctx.kind,
             "chapters=",tostring(ctx.catalog_count or 0),"source=",tostring(ctx.catalog_source or "unknown"))
         self:download(ctx.book,{
-            annotations=ctx.kind=="notes",chapter_uid=ctx.next_uid,prefetch=true,prefetch_hidden=true,
+            annotations=ctx.kind=="notes",on_demand_thoughts=ctx.record and ctx.record.on_demand_thoughts,chapter_uid=ctx.next_uid,prefetch=true,prefetch_hidden=true,
             prefetch_source_uid=ctx.current_uid,prefetch_target_title=ctx.next_title,
         },false,function(rec)
             if rec and rec.file then
@@ -20488,7 +20499,7 @@ function Plugin:_open_next_single_chapter(options)
     self._chapter_advance_waiting=true
     self._chapter_advance_target_uid=ctx.next_uid
     local started=self:download(ctx.book,{
-        annotations=ctx.kind=="notes",chapter_uid=ctx.next_uid,
+        annotations=ctx.kind=="notes",on_demand_thoughts=ctx.record and ctx.record.on_demand_thoughts,chapter_uid=ctx.next_uid,
         chapter_continuous_open=true,chapter_continuous_target_uid=ctx.next_uid,
         chapter_continuous_book_id=ctx.book_id,chapter_continuous_title=ctx.next_title,
     },true,nil,true)
@@ -21327,7 +21338,7 @@ end
 
 function Plugin:_annotation_retry_options(kind,record,chapter_uid)
     record=type(record)=="table" and record or {}
-    local opt={annotations=true}
+    local opt={annotations=true,on_demand_thoughts=record.on_demand_thoughts==true or nil}
     if chapter_uid then
         opt.chapter_uid=tostring(chapter_uid)
     elseif tostring(kind or ""):sub(1,6)=="range_" or record.partial_range==true then
@@ -22105,6 +22116,9 @@ function Plugin:_schedule_home_annotation_summary_refresh(force)
                 self._annotation_summary_cache_at=os.time()
                 self._home_sync_summary_cache=nil
                 self._home_sync_summary_cache_at=nil
+                -- Header rendering only reads the cached summary. Rebuild it
+                -- from this completed scan before repainting the status.
+                self:_home_sync_summary(false)
                 if HomeView.is_shown() and not self:_active_reader_ui() then
                     self:_notify_home_data_changed("header")
                 end
@@ -27456,6 +27470,7 @@ end
 
 function Plugin:_finish_thought_popup(generation)
     if generation and generation~=self._thought_popup_generation then return end
+    require("miuread.on_demand_thoughts").cancel(self,false)
     self._thought_popup=nil
     self._thought_popup_busy=false
     self:_clear_thought_popup_marker()
@@ -27988,6 +28003,7 @@ function Plugin:show_thought_favorites(options)
 end
 
 function Plugin:_close_active_thought_popup(reason)
+    require("miuread.on_demand_thoughts").cancel(self,true)
     local popup=self._thought_popup
     self._thought_popup_generation=(tonumber(self._thought_popup_generation) or 0)+1
     self._thought_popup=nil
@@ -28189,6 +28205,14 @@ function Plugin:_open_thought_info(info,generation)
     if generation~=self._thought_popup_generation or not (self.ui and self.ui.document) then
         self:_finish_thought_popup(generation)
         return
+    end
+    if info.on_demand==true then
+        local ok,value=pcall(require("miuread.on_demand_thoughts").open,self,info,generation)
+        if not ok then
+            self:_finish_thought_popup(generation)
+            self:info("想法窗口暂时无法打开，请稍后重试。")
+        end
+        return ok and value or false
     end
     local started=monotonic_wall_time()
     local popup,notice

@@ -1,58 +1,126 @@
-# MiuRead
+# 觅阅 · Kindle Voyage 个人修改版
 
-> **5.9.0 · Stable Release**
+这是我在 Kindle Voyage 上使用觅阅时整理的一份个人 fork：希望能用合适的字体阅读微信读书，减少登录、书架刷新和想法加载时遇到的等待，也把排查过程中的修复公开，方便有类似设备的人参考。
 
-5.9.0 开始把“本机/云端冲突需要用户判断”改为无感云端镜像：打开书籍时自动按同步因果和更新时间选择最新阅读状态，在定位完成前短暂保护翻页；精确 `chapter_uid + co` 仍是最终验收依据。账号书架默认使用微信云端顺序，已读完状态与当前位置分离解析，自动云端跳转可以短时撤回。
+**首先感谢 [miumiupy98-art/miuread-koreader](https://github.com/miumiupy98-art/miuread-koreader) 的作者和贡献者。** 登录、书架、阅读器集成、进度同步、阅读时间上报等基础能力来自原项目；这个仓库是在原版 **v5.9.0** 上做的一组个人修改。也感谢更早的 [finlater/weread.koplugin](https://github.com/finlater/weread.koplugin) 和 [KOReader](https://github.com/koreader/koreader)。
 
-本仓库同时维护正式版与内测版：
+这是独立的社区实验版本。它不是微信读书或 KOReader 的官方版本，也不是原作者发布的正式版本。
 
-- `main`：正式版
-- `beta`：内测版
-- 正式 OTA：`stable-channel/update.json`
-- 内测 OTA：`beta-channel/update-beta.json`
+## 这份 fork 改了什么
 
-## Versions
+### 1. 下载正文和划线，想法点开再取
 
-- 正式版：以 GitHub Releases 中最新的非 Pre-release 为准。
-- 内测版：以 GitHub Releases 中最新的 Pre-release 为准。
+新增下载选项：**「正文＋划线，想法按需加载」**。
 
-完整版本记录见 [`CHANGELOG.md`](CHANGELOG.md)。
+- 下载时获取正文、划线位置，跳过全书想法正文。
+- 阅读时点击一处划线，后台获取这一处最多 **5 条想法**。
+- 只有点击 **「下一批」** 才继续请求，不自动抓取整章评论。
+- 支持取消、超时提示和重试；关闭窗口释放当前显示数据。
+- 会话中最多缓存最近 **两处划线的首批内容**，计量的字符串数据合计不超过 **192 KiB**。
+- 后续批次仅供当前窗口显示。退出阅读或休眠会清理会话缓存。
 
-当前正式版：`5.9.0`。本版本由 `5.9.0-beta.19` 收口而来，以 5.8.0-beta.26 为兼容基线，Schema 为 136；正式版保留 5.9 beta 阶段已经完成验证的多设备 latest-wins、精确进度与安全恢复模型。
+192 KiB 是内容缓存的额度，**不是整个插件或 KOReader 的内存上限**。后台任务传递结果时仍可能短暂使用临时文件；新模式不写入永久想法数据库。
 
+原有「纯净版」和「划线与想法版」继续保留。只有使用新选项下载的版本，才带有按需想法入口。
 
-## 5.9.0 highlights
+### 2. 修复按需想法的请求和分页
 
-- 多设备续读以可信 verified anchor、真实阅读事件与云端更新时间判断 `LOCAL_NEWER / REMOTE_NEWER / ALIGNED / CONFLICT`，并用 write fence 防止旧位置误写回云端。
-- 精确同步以 `chapter_uid + co` 为最终验收；本地映射使用多级双向唯一正文锚点、fresh source recovery 和严格 fail-closed 策略。
-- 云端唯一 text anchor 命中后保留正文落点，不再让 percent correction 覆盖已经成功的精确导航。
-- 阅读时间保持 best-effort 与 fresh-GET-before-POST，和阅读进度写入相互隔离；失败恢复采用 verify-first，避免不确定写请求被重复提交。
-- 微信读书外文书支持原文、双语、仅译文三态以及安全译文 EPUB 替换。
-- 主页刷新/同步入口、扩展中心、下载、锁屏和本地书库能力继续继承并整合 5.8 后期改进。
+在测试设备上，网页接口出现过登录超时，而 Skill Gateway 仍能返回内容。按需弹窗改为直接使用后者，保留原有请求节奏和限流保护。
 
-## Installation
+分页只推进服务器返回的 `maxIdx`，`synckey` 保持为 `0`：它是增量同步标记，直接拿返回值去请求下一批，可能错误地得到空页。真实只读请求已验证连续两批各返回 5 条、没有重复。
 
-1. 在 GitHub Releases 下载需要的版本。
-2. 解压后将完整的 `miuread.koplugin` 目录放入 KOReader 的插件目录。
-3. 完整重启 KOReader。
-4. 支持双更新通道的版本可在“觅阅设置 → 更新与关于 → 更新通道”中选择正式通道或内测通道。
+请求有响应大小限制，解析后也有单批内容限制；失效游标、过大响应和异常结果会停止加载。具体错误进入诊断日志，界面提供可操作的提示。
 
-## Release Process
+### 3. 改善名字、正文和表情的显示
 
-- Stable tag：`vX.Y.Z`
-- Beta tag：`vX.Y.Z-beta.N`
-- 正式版发布到 `stable-channel`
-- 内测版发布到 `beta-channel`
-- 创建 Tag 后，发布工作流会自动同步分支源码中的版本号、发布通道与 `CHANGELOG.md`，再把 Tag 指向同步后的提交。
-- Beta Tag 必须创建在 `beta` 最新提交；Stable Tag 必须创建在 `main` 最新提交。
-- 最终分支源码、Tag 源码、Release 安装包与 OTA 清单保持同一版本。
+按需想法使用独立的原生评论弹窗：
 
-仓库根目录 `update.json` 仅保留为旧正式版 OTA 桥接入口，不作为当前正式版实时更新清单。
+- 用户名使用较小的界面字体、淡灰色。
+- 正文使用较大的阅读字体、黑色，评论之间有分隔。
+- 保留「下一批」「回到首批」「关闭」按钮。
+- 表情转成 `[微笑]`、`[赞]`、`[表情]` 等文字，避免旧字体栈影响整条评论显示。
+- 兼容组合表情、肤色修饰符和旗帜；转换只发生在显示层，缓存中的原名字和正文保持完整。
 
-## Origin and License
+它目前用于**阅读想法**，没有新增点赞、发布评论等交互。
 
-MiuRead originated as a modified version of `finlater/weread.koplugin` v0.1.1 and has since undergone substantial restructuring, modification, and extension.
+### 4. 修复二维码登录和书架刷新
 
-MiuRead is an unofficial community project and is not affiliated with or endorsed by WeRead, Tencent, KOReader, or their maintainers.
+- 获取二维码标识的步骤改为可取消的后台任务，并设定超时，减少扫码入口卡住的情况。
+- 修复登录流程中的 OTP 窗口关闭问题。
+- 用户主动刷新书架享有明确的任务优先级，避免触摸操作把这次刷新取消。
+- 批注摘要完成后立即重新生成摘要并刷新标题，避免一直停在「同步检查中」。
 
-This project is distributed under the GNU Affero General Public License version 3 only (`AGPL-3.0-only`). See `LICENSE`, `NOTICE`, and `THIRD_PARTY_NOTICES` for details.
+### 5. 隔离限流状态并优化划线渲染
+
+- 外部元数据服务的 HTTP 429 不再把微信读书请求一起暂停；微信读书自身的限流仍然保留。
+- 划线渲染由逐字符重复遍历改为定位起点后顺序推进，减少大量划线时的处理开销。
+- 断点续传、修复、后续章节和预读取保留按需模式，避免意外恢复成全量想法下载。
+
+实现细节和文件映射见 [个人修改记录](FORK_CHANGELOG.md)。
+
+## 测试范围与当前状态
+
+开发设备是 **Kindle Voyage，固件 5.13.6**，安装 **KOReader 2026.07.1（kindlepw2 包）**；觅阅基线为 **v5.9.0**。其他设备、固件和 KOReader 版本尚未实测。
+
+| 项目 | 当前证据 |
+| --- | --- |
+| 二维码登录、完整书架显示 | 设备使用者确认恢复正常 |
+| 按需获取想法 | 请求修复后，设备使用者确认能显示 |
+| 表情替代、名字与正文分层 | 补丁已安装；本地检查通过，最终显示和按钮操作仍待设备反馈 |
+| 回归检查 | Lua 5.1 语法检查、54 项行为检查，以及 1,200 组划线渲染等价用例 |
+| 微信读书阅读时间 | 沿用上游 best-effort 上报；手机最终计入结果尚未核实 |
+
+**尚未实现：** 当前章先打开、后台持续下载整本，以及两路并行下载。现在仍会按现有流程逐章处理正文、脚注和划线，长书下载仍可能较慢。
+
+本地 EPUB 可以由 KOReader 阅读，但这个 fork 没有新增将本地书阅读时间计入微信读书的功能。
+
+## 安装与使用
+
+需要设备已经能够运行 KOReader；本仓库不提供 Android 刷机或越狱安装包。
+
+1. 完全退出 KOReader，再通过 USB 连接电脑。
+2. 备份现有 `koreader/plugins/miuread.koplugin/`。如已使用觅阅，也在自己电脑上备份 `koreader/settings/miuread.lua` 和 `koreader/miuread/`；这些文件包含个人状态，**不要上传到公开仓库或 Issue**。
+3. 在本仓库点击 **Code → Download ZIP**，解压，找到里面的完整 `miuread.koplugin` 目录。
+4. 将该目录放到设备的 `koreader/plugins/` 下，替换原插件目录。升级时保留设备的登录设置、书籍和数据目录。
+5. 安全弹出设备，完整重启 KOReader。
+6. 进入觅阅，连接 Wi-Fi，选择一本书，并选择 **「正文＋划线，想法按需加载」**。
+7. 下载后打开这个版本，点击划线，测试首批想法和「下一批」。正文可离线阅读，想法需要联网。
+
+已经下载的纯净版或旧批注版不会自动变成按需版，需要用新选项下载一次。批注版本记录位置与完整想法版共用：切换后旧文件仍保留，但书架默认打开最近记录的版本。
+
+**更新提醒：** 继承的插件更新入口和更新清单仍指向上游。安装上游更新会覆盖本 fork 的修改；需要继续使用个人修改时，请从本仓库手动更新。
+
+如果要回退，退出 KOReader，恢复备份的插件目录后重启。新增的三个按需显示模块也应随目录回退移除。
+
+## 开发、验证和打包
+
+测试只使用合成数据，不需要登录账号、接入 Kindle 或访问微信读书。需要 Python 3 和 Lua 5.1 / LuaJIT。
+
+```bash
+git clone https://github.com/SavannahY/miuread-koreader.git
+cd miuread-koreader
+python3 tools/voyage/run_tests.py --lua lua5.1
+```
+
+如果使用 LuaJIT，把最后一个参数改成 `luajit`。测试涵盖分页、真实调用链的离线替身、缓存、取消、过期回调、表情、原生按钮契约、HTTP 响应限制、限流隔离、书架刷新和划线渲染等价性。通过这些检查不等于通过全部设备测试。
+
+生成只包含已跟踪插件文件的安装包：
+
+```bash
+python3 tools/build_voyage_package.py
+```
+
+输出到 `dist/`，同时生成 SHA-256 校验文件。仓库的 Voyage 检查工作流执行同样的离线测试和打包步骤。
+
+反馈问题时，请提供设备型号、固件、KOReader 版本、下载模式、操作步骤和经过脱敏的错误文字。请勿附上账号凭证、Cookie、API key、整本书或完整个人设置文件。
+
+## 致谢与许可证
+
+这份 fork 的基础能力和大部分代码来自原作者。我主要整理了在自己的 Voyage 上遇到的问题和修改，希望能减少后来使用者的排查成本。
+
+- 直接上游：[miumiupy98-art/miuread-koreader](https://github.com/miumiupy98-art/miuread-koreader)
+- 更早来源：[finlater/weread.koplugin](https://github.com/finlater/weread.koplugin)
+- 阅读器：[KOReader](https://github.com/koreader/koreader)
+- 原版说明：[v5.9.0 README 存档](docs/upstream/README-v5.9.0.md)
+
+保留 [LICENSE](LICENSE)、[NOTICE](NOTICE) 和 [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES)，继续采用 **AGPL-3.0-only**。原有代码的版权属于原作者及贡献者，个人新增修改按同一许可证公开。

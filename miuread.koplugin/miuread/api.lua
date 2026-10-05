@@ -695,12 +695,13 @@ function Api:review_batches(ranges, batch_size)
     return out
 end
 
-function Api:_web_readreviews(id,chapter_uid,batch)
+function Api:_web_readreviews(id,chapter_uid,batch,limits)
     local last
     local candidates=unique_candidates(chapter_uid)
     if #candidates==0 then error("/web/book/readReviews: invalid chapterUid") end
     for _,uid in ipairs(candidates) do
         local options=U.copy(WEB_ANNOTATION_REQUEST_OPTIONS)
+        for k,v in pairs(limits or {}) do options[k]=v end
         options.headers=annotation_headers(id,uid)
         local payload={
             bookId=tostring(id or ""),
@@ -718,20 +719,22 @@ function Api:_web_readreviews(id,chapter_uid,batch)
     error(last or "web readReviews failed")
 end
 
-function Api:_agent_readreviews(id,chapter_uid,batch)
+function Api:_agent_readreviews(id,chapter_uid,batch,limits)
+    local options=U.copy(AGENT_ANNOTATION_REQUEST_OPTIONS)
+    for k,v in pairs(limits or {}) do options[k]=v end
     local value=self:_chapter_call("/book/readreviews",id,chapter_uid,
-        {reviews=sanitize(batch or {})},AGENT_ANNOTATION_REQUEST_OPTIONS)
+        {reviews=sanitize(batch or {})},options)
     if type(value)=="table" then value._annotation_source="agent" end
     return value
 end
 
-function Api:readreviews(id, chapter_uid, batch)
+function Api:readreviews(id, chapter_uid, batch, limits)
     if self.web_annotation_auth_dead==true then
         logger.dbg("[MiuRead][API] web readReviews skipped; annotation circuit open",
             "book=",tostring(id),"chapter=",tostring(chapter_uid),"ranges=",tostring(#(batch or {})))
-        return self:_agent_readreviews(id,chapter_uid,batch)
+        return self:_agent_readreviews(id,chapter_uid,batch,limits)
     end
-    local ok,value=pcall(self._web_readreviews,self,id,chapter_uid,batch)
+    local ok,value=pcall(self._web_readreviews,self,id,chapter_uid,batch,limits)
     if ok then self.web_annotation_auth_dead=false; return value end
     self:_note_web_annotation_failure(value)
     -- Batch-shape failures must go back to the adaptive splitter. Falling
@@ -741,7 +744,7 @@ function Api:readreviews(id, chapter_uid, batch)
     logger.warn("[MiuRead][API] web readReviews unavailable; using Skill Gateway",
         "book=",tostring(id),"chapter=",tostring(chapter_uid),
         "ranges=",tostring(#(batch or {})),"error=",tostring(value))
-    return self:_agent_readreviews(id,chapter_uid,batch)
+    return self:_agent_readreviews(id,chapter_uid,batch,limits)
 end
 
 Api._scalar = scalar

@@ -153,7 +153,8 @@ local function partial_options(manifest)
     end
     local key=tostring(manifest.option_key or "")
     local options={
-        annotations=key:match("^notes%-")~=nil,
+        annotations=key:match("^notes%-")~=nil or key:match("^ondemand%-")~=nil,
+        on_demand_thoughts=key:match("^ondemand%-")~=nil or nil,
         images=key:find("%-no%-images%-",1,false)==nil,
     }
     local entries={}
@@ -299,6 +300,7 @@ function M.repair_options(record)
     local annotations=base=="notes" or variant=="notes" or variant=="range_notes"
     local opt={
         annotations=annotations,
+        on_demand_thoughts=record.on_demand_thoughts==true or nil,
         repair_only=true,
         repair_source="book_integrity",
         range_start_index=record.range_start_index,

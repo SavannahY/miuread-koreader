@@ -19,9 +19,23 @@ local Cookies=require("miuread.cookies")
 local Protocol=require("miuread.protocol")
 local Text=require("miuread.text")
 local Util=require("miuread.util")
+local Async=require("miuread.async")
 local _=Text.tr
 local Auth={}; Auth.__index=Auth
 local BASE="https://weread.qq.com"
+local LOGIN_UID_TIMEOUT_SECONDS=30
+local function uid_error_message(err)
+    local text=tostring(err or "")
+    if text=="worker timeout" or text:lower():find("timeout",1,true) then
+        return "二维码获取超时，请检查 Wi-Fi 后重试。","timeout"
+    end
+    local code=text:match("HTTP%s+(%d%d%d)")
+    if code then
+        return "二维码获取失败：微信读书返回 HTTP "..code.."，请稍后重试。","HTTP "..code
+    end
+    -- Do not expose server response bodies, login UIDs or session cookies.
+    return "二维码获取失败，请检查 Wi-Fi 后重试。","request failed"
+end
 local function header_value(headers,name)
     local target=name:lower()
     for k,v in pairs(headers or {}) do if type(k)=="string" and k:lower()==target then return v end end
@@ -39,6 +53,7 @@ function Auth:new(http,store,host)
         http=http, store=store, host=host, generation=0, jar={}, dialog=nil,
         retry_dialog=nil, started=0, active=false, closing=false, poll_failures=0,
         refresh_count=0, pending_auth=nil, pending_name="", pending_expected_revision=nil,
+        uid_async=Async:new(store,{poll_interval=.25,allow_android=true,disable_fallback=true}),
     },self)
 end
 local function merge_auth_headers(jar,vid,key)
@@ -66,6 +81,7 @@ end
 function Auth:cancel()
     self.generation=self.generation+1
     self.active=false
+    self.uid_async:cancel("QR login cancelled")
     self:_close_dialog()
     self:_close_retry_dialog()
     self.jar={}
@@ -77,10 +93,16 @@ function Auth:cancel()
     self.pending_expected_revision=nil
 end
 function Auth:_uid()
-    local _,code,h=self.http:request{url=BASE.."/r/weread-skills",method="GET",auth=false,headers={Referer=BASE.."/"}}
+    logger.info("[MiuRead][Auth] QR login page request")
+    local _,code,h=self.http:request{url=BASE.."/r/weread-skills",method="GET",auth=false,
+        timeout={8,12},retries=0,rate_limit_retries=0,rate_limit_fail_fast=true,
+        headers={Referer=BASE.."/"}}
     if code<200 or code>=400 then error("login page HTTP "..tostring(code)) end
     self.jar=Cookies.session_absorb({},header_value(h,"set-cookie"))
-    local data,headers=self.http:get_json(BASE.."/api/auth/getLoginUid",{auth=false,headers={Referer=BASE.."/r/weread-skills",Cookie=Cookies.session_header(self.jar)}})
+    logger.info("[MiuRead][Auth] QR UID request")
+    local data,headers=self.http:get_json(BASE.."/api/auth/getLoginUid",{auth=false,
+        timeout={8,12},retries=0,rate_limit_retries=0,rate_limit_fail_fast=true,
+        headers={Referer=BASE.."/r/weread-skills",Cookie=Cookies.session_header(self.jar)}})
     self.jar=Cookies.session_absorb(self.jar,header_value(headers,"set-cookie"))
     if type(data.uid)~="string" or data.uid=="" then error("login UID missing") end
     return data.uid
@@ -367,31 +389,56 @@ function Auth:_begin(refresh_count)
         self:_show_retry("网络不可用，暂时无法获取登录二维码。")
         return
     end
+    self.dialog=ButtonDialog:new{
+        title="正在获取登录二维码……\n可以取消后重试。",
+        title_align="center",
+        dismissable=false,
+        buttons={{{text=_("Cancel"),callback=function()
+            self:cancel()
+            self.host:toast(_("Login cancelled"))
+        end}}},
+    }
+    UIManager:show(self.dialog)
     UIManager:scheduleIn(.05,function()
         if gen~=self.generation or not self.active then return end
-        local ok,uid=pcall(self._uid,self)
-        if not ok then
-            logger.warn("[MiuRead][Auth] QR creation failed", Util.first_line(tostring(uid):gsub("[%c]+"," "),180))
-            self:_show_retry("二维码获取失败："..Util.first_line(uid,120))
-            return
+        local started=self.uid_async:run("QR login UID",function()
+            local uid=self:_uid()
+            -- Forked workers do not share mutations with the UI process.
+            return {uid=uid,jar=self.jar}
+        end,function(result)
+            if gen~=self.generation or not self.active then return end
+            self:_close_dialog()
+            local value=type(result)=="table" and result.ok==true and result.value or nil
+            if type(value)~="table" or type(value.uid)~="string" or value.uid=="" or type(value.jar)~="table" then
+                local message,reason=uid_error_message(type(result)=="table" and result.error)
+                logger.warn("[MiuRead][Auth] QR creation failed",reason)
+                self:_show_retry(message)
+                return
+            end
+            self.jar=value.jar
+            local uid=value.uid
+            local size=math.floor(math.min(Device.screen:getWidth(),Device.screen:getHeight())*.72)
+            local dialog
+            dialog=QRMessage:new{
+                text=BASE.."/web/confirm?uid="..Protocol.escape(uid),
+                width=size,height=size,scale_factor=.9,
+                dismiss_callback=function()
+                    if self.dialog==dialog then self.dialog=nil end
+                    if gen==self.generation and self.active and not self.closing then
+                        self:cancel()
+                        self.host:toast(_("Login cancelled"))
+                    end
+                end,
+            }
+            self.dialog=dialog
+            UIManager:show(dialog)
+            logger.info("[MiuRead][Auth] QR code shown")
+            self:_schedule(uid,gen,"")
+        end,LOGIN_UID_TIMEOUT_SECONDS)
+        if not started and gen==self.generation and self.active then
+            logger.warn("[MiuRead][Auth] QR worker unavailable")
+            self:_show_retry("无法启动登录后台任务，请完整退出并重开 KOReader 后重试。")
         end
-        if gen~=self.generation or not self.active then return end
-        local size=math.floor(math.min(Device.screen:getWidth(),Device.screen:getHeight())*.72)
-        local dialog
-        dialog=QRMessage:new{
-            text=BASE.."/web/confirm?uid="..Protocol.escape(uid),
-            width=size,height=size,scale_factor=.9,
-            dismiss_callback=function()
-                if self.dialog==dialog then self.dialog=nil end
-                if gen==self.generation and self.active and not self.closing then
-                    self:cancel()
-                    self.host:toast(_("Login cancelled"))
-                end
-            end,
-        }
-        self.dialog=dialog
-        UIManager:show(dialog)
-        self:_schedule(uid,gen,"")
     end)
 end
 function Auth:start()
@@ -444,7 +491,7 @@ function Auth:_schedule(uid,gen,otp)
         end
         local code=tostring(data.logicCode or "")
         if code=="NEED_OTP" or code=="OTP_NOT_MATCH" then
-            local d=self.dialog; self.dialog=nil; if d then UIManager:close(d) end; self:_otp(uid,gen,code=="OTP_NOT_MATCH")
+            self:_close_dialog(); self:_otp(uid,gen,code=="OTP_NOT_MATCH")
         elseif code=="LOGIN_TIMEOUT" or code=="OTP_EXPIRED" then
             self:_expire(gen,"登录二维码已过期。")
         else
@@ -454,7 +501,8 @@ function Auth:_schedule(uid,gen,otp)
 end
 function Auth:_otp(uid,gen,bad)
     local d
-    d=InputDialog:new{title=_("Verification code"),input="",description=(bad and "验证码不正确。\n\n" or "").._("Enter the four-digit code shown on your phone."),buttons={{{text=_("Cancel"),id="close",callback=function() UIManager:close(d); self:cancel() end},{text=_("Confirm"),is_enter_default=true,callback=function() local otp=Util.trim(d:getInputText()); UIManager:close(d); self.dialog=nil; self:_schedule(uid,gen,otp) end}}}}
+    d=InputDialog:new{title=_("Verification code"),input="",description=(bad and "验证码不正确。\n\n" or "").._("Enter the four-digit code shown on your phone."),buttons={{{text=_("Cancel"),id="close",callback=function() self:cancel() end},{text=_("Confirm"),is_enter_default=true,callback=function() local otp=Util.trim(d:getInputText()); self:_close_dialog(); self:_schedule(uid,gen,otp) end}}}}
+    self.dialog=d
     UIManager:show(d); d:onShowKeyboard()
 end
 return Auth
