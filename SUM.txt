@@ -1,1 +1,0 @@
-5.9.0-beta.19：本地→云端精确换算新增 forward/backward 24/16/12 多级唯一正文锚点、有限标题/邻章 recovery 与 progress-source 专用无可见格式字符归一化；多个锚点坐标冲突继续 fail closed。云端→本地 text-anchor 唯一命中后不再显示“精确位置未确认”，也不再用 percent correction 覆盖已精准正文落点。ReadReport v30 与 exact cloud readback 保持不变。Schema 136。
