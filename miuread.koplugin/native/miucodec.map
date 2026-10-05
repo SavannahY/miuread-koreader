@@ -1,4 +1,0 @@
-{
-    global: miucodec_*;
-    local: *;
-};
